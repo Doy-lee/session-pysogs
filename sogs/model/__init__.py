@@ -13,12 +13,13 @@ if config.PROFANITY_FILTER and config.RUNNING_AS_APP:
 # added that a Session client might want to know about a string still be added here to allow session
 # to identify the server's capabilities and act accordingly.
 capabilities = {
-    'sogs',  # Basic sogs capabilities
-    'reactions',  # Reactions, added in 0.3.1
-    'server-ban-and-delete',  # Support "Ban from Server and Delete All"
+    'sogs',                  # Basic sogs capabilities
+    'reactions',             # Reactions, added in 0.3.1
+    'server-ban-and-delete', # Support "Ban from Server and Delete All"
+    'blind25',               # v2 blinded keys, "25xxx", are supported (check `blind` to see if required)
     # 'newcap',  # Add here
 }
 
 if config.REQUIRE_BLIND_KEYS:
-    # indicate blinding required if configured to do so
+    # indicates that blinding is required
     capabilities.add('blind')
