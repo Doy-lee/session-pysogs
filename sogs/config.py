@@ -70,7 +70,7 @@ def load_config():
         return
 
     logger.info(f"Loading config from {conf_ini}")
-    cp = configparser.ConfigParser()
+    cp = configparser.ConfigParser(strict=False) # Note: Multiple mules in UWSGI section is permitted
     cp.read(conf_ini)
 
     # Set log level up first (we'll set it again below, mainly to log it if we have debug logging

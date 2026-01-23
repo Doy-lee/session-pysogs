@@ -10,12 +10,13 @@ from .web import app
 from . import cleanup
 from . import config
 from . import omq as o
-from . import db
 from .db import query
 from .model.user import User
 from .model.room import Room
 from .model.exc import NoSuchRoom, NoSuchUser
 from .model.post import Post
+
+from . import db
 
 # This is the uwsgi "mule" that handles things not related to serving HTTP requests:
 # - it holds the oxenmq instance (with its own interface into sogs)
@@ -66,12 +67,9 @@ def run_captcha():
     import sogs.plugins as plugins
     try:
         app.logger.info("CAPTCHA plugin mule started.")
-
         plugins.run_captcha_plugin(db)
-
     except Exception:
         app.logger.error("mule died via exception:\n{}".format(traceback.format_exc()))
-
 
 def run():
     try:

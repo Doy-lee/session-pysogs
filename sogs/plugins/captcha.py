@@ -6,16 +6,14 @@ import random
 import time
 import asyncio
 import os
+import dataclasses
 
+@dataclasses.dataclass
 class Captcha:
-
-    def __init__(self, answer, file_name):
-        self.answer = answer
-        self.file_name = file_name
-
+    answer:        str # Answer to the CAPTCHA challenge (e.g. the emoji string)
+    rel_file_path: str # Relative file path from CWD to the CAPTCHA image
     async def generate_captcha(self, executor, width, height):
         pass
-
 
 class EmojiCaptcha(Captcha):
     class Shape:
@@ -86,7 +84,7 @@ class EmojiCaptcha(Captcha):
     WIDTH = 400
     HEIGHT = 400
 
-    def __init__(self, answer_emoji, file_name):
+    def __init__(self, answer_emoji: str, rel_file_path: str):
         # List of possible shapes
         self.shape_set = ["rectangle", "hexagon", "circle", "triangle", "star", "octagon"]
         # List of primary colors
@@ -95,7 +93,7 @@ class EmojiCaptcha(Captcha):
         Captcha.__init__(
             self,
             answer=answer_emoji,
-            file_name=file_name
+            rel_file_path=rel_file_path
         )
 
     async def generate_captcha(self, executor, width=WIDTH, height=HEIGHT):
@@ -128,14 +126,12 @@ class EmojiCaptcha(Captcha):
             embedded_color=True
         )
         # Save the image
-        image_path = f"{self.file_name}"
+        image_path = f"{self.rel_file_path}"
         await asyncio.get_event_loop().run_in_executor(executor, image.save, image_path)
 
 
 class CaptchaManager:
-
     IMAGES_DIR = "async_generated_images"
-
     def __init__(self, initial_count=200):
         self.captcha_list = []
         os.makedirs(CaptchaManager.IMAGES_DIR, exist_ok=True)

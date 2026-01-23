@@ -5,7 +5,8 @@ requires some configuration on the backend in order to add rooms and initial adm
 using the deb-based installation the commands are available through the `sogs` command-line tool.
 
 Note: When running from a session-pysogs project source code directory then you must run `python3
--msogs` from the `session-pysogs` directory instead of the `sogs` command.
+-msogs` from the `session-pysogs` directory instead of the `sogs` command. You may specify a custom
+configuration file by setting the SOGS_CONFIG environment variable to the desired ini file.
 
 The full list of available commands is available by running:
 

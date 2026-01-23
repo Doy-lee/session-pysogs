@@ -1,231 +1,241 @@
-from sogs.plugins.captcha import CaptchaManager, EmojiCaptcha
+import dataclasses
+
+from sogs.plugins.captcha import CaptchaManager, Captcha
 from sogs.plugins_interface import *
 
+@dataclasses.dataclass
+class UserCaptchaState:
+    pending_captcha_msg_id:                MessageID | None  = None # Message ID of the CAPTCHA challenge we have sent to the user
+    pending_captcha_refresh_emoji_applied: bool              = False
 
-def _delete(_dict, outer_key, inner_key):
-    del _dict[outer_key][inner_key]
-    if len(_dict[outer_key]) == 0:
-        del _dict[outer_key]
+    # Temporary messages sent by the bot that should be deleted. This is generally diagnostic
+    # messages like informing the user that they must wait before requesting a new CAPTCHA if they
+    # attempt to request a new CAPTCHA too early. When a new CAPTCHA is requested, these temporary
+    # messages are deleted from the room.
+    temp_msgs_to_delete:                   list[MessageID]   = dataclasses.field(default_factory=list)
 
+    retry_jail:                            TimestampS | None = None # Timestamp at which the user can retry again. None if the user isn't jailed
+    retry_failures:                        int               = 0
+    challenge_captcha:                     Captcha | None    = None
+    challenge_timestamp:                   TimestampS        = 0.0
 
-def _set(_dict, outer_key, inner_key, value):
-    if outer_key not in _dict:
-        _dict[outer_key] = dict()
-    _dict[outer_key][inner_key] = value
-
-
+@dataclasses.dataclass
 class CaptchaPlugin(Plugin):
+    refresh_emoji:     str                                                = "\U0001F504" # Emoji to use that the user must react with to refresh the captcha
+    users:             dict[SessionID, dict[RoomToken, UserCaptchaState]] = dataclasses.field(default_factory=dict)
 
-    def __init__(
-            self,
-            sogs_address,
-            sogs_pubkey,
-            privkey,
-            pubkey,
-            display_name,
-            retry_limit=3,
-            refresh_timeout=60,
-            retry_timeout=120,
-            write_timeout=120,
-    ):
-        self.refresh_reaction = "\U0001F504"
-        self.pending_requests = {}  # map {session_id : {room_token : msg_id}}
-        self.pending_delete = {}  # map {session_id : {room_token : [msg_id]}}
-        self.retry_jail = {}  # map {session_id: {room_token : Timestamp}}
-        self.retry_limit = retry_limit
-        self.retry_timeout = retry_timeout
-        self.refresh_timeout = refresh_timeout
-        self.write_timeout = write_timeout
-        self.challenges = {}  # map {session_id : {room_token : (Captcha, Timestamp)}}
-        self.retry_record = {}  # map {session_id: {room_token : Int}}
-        self.captcha_manager = CaptchaManager(initial_count=200)
+    # Number of CAPTCHAs that a user can request and fail before being permanently jailed
+    retry_limit:       int                                                         = 3
 
-        Plugin.__init__(self, sogs_address, sogs_pubkey, privkey, pubkey, display_name)
+    # The time a user has to wait after failing a CAPTCHA before a new CAPTCHA will be presented.
+    retry_timeout_s:   int                                                         = 60
+
+    # The time a user has to wait between refreshes where they can request a new CAPTCHA. Each
+    # refresh
+    refresh_timeout_s: int                                                         = 60
+
+    # The amount of time that a user has to wait before they can start sending messages in a
+    # community after successfully solving the CAPTCHA.
+    write_timeout:     int                                                         = 120
+    captcha_manager:   CaptchaManager                                              = dataclasses.field(default_factory=CaptchaManager)
+
+    def __post_init__(self):
+        super().__post_init__()
+        # NOTE: Register our hook which is called by SOGS when a user attempts to read from the
+        # community. In this hook we check if the user has solved a captcha before and lets the user
+        # read or otherwise require them to solve captcha to proceed.
         self.register_request_read_handler(self.handle_request_read)
 
-    def handle_request_read(self, req):
-        room_token = req[b'room_token']
-        room_name = req[b'room_name'].decode('utf-8')
-        session_id = req[b'session_id']
-        if session_id in self.retry_record and room_token in self.retry_record[session_id]:
-            if self.retry_record[session_id][room_token] >= self.retry_limit:
-                return bt_serialize("JAIL FOREVER")
+    def get_user(self, session_id: bytes, room_token: bytes) -> UserCaptchaState | None:
+        result = None
+        if session_id in self.users and room_token in self.users[session_id]:
+            result = self.users[session_id][room_token]
+        return result
 
-        if session_id in self.retry_jail and room_token in self.retry_jail[session_id]:
-            if time() > self.retry_jail[session_id][room_token]:
-                _delete(self.retry_jail, session_id, room_token)
+    def get_or_make_user(self, session_id: bytes, room_token: bytes) -> UserCaptchaState:
+        result = self.users.setdefault(session_id, {}).setdefault(room_token, UserCaptchaState())
+        return result
+
+    def handle_request_read(self, req: RoomReadRequest) -> bt_value:
+        user: UserCaptchaState = self.get_or_make_user(req.session_id, req.room_token)
+        if user.retry_failures >= self.retry_limit:
+            return oxenc.bt_serialize("JAIL FOREVER")
+
+        if user.retry_jail:
+            if time() > user.retry_jail:
+                user.retry_jail = None
             else:
-                return bt_serialize("JAIL")
+                return oxenc.bt_serialize("JAIL")
 
-        if session_id in self.pending_requests and room_token in self.pending_requests[session_id]:
-            return bt_serialize("OK")
-        print(f"request_read from {session_id}, id={req[b'user_id']}, room={room_token}")
-        return self.post_challenge(room_token, session_id, room_name)
+        # NOTE: If the user already has a CAPTCHA challenge to solve, no furthera ction is needed.
+        if user.pending_captcha_msg_id:
+            return oxenc.bt_serialize("OK")
 
-    def post_challenge(self, room_token, session_id, room_name):
+        print(f"request_read from {req.session_id}, id={req.user_id}, room={req.room_token}")
+        return self.post_challenge(req.room_token, req.session_id, req.room_name)
+
+    def post_challenge(self, room_token: bytes, session_id: SessionID, room_name: str) -> bt_value:
         try:
-            if session_id in self.pending_delete and room_token in self.pending_delete[session_id]:
-                self.delete_messages(self.pending_delete[session_id][room_token])
-                _delete(self.pending_delete, session_id, room_token)
+            user: UserCaptchaState = self.get_or_make_user(session_id, room_token)
 
-            self.refresh_capcha_handler(session_id, room_token)
-            captcha = self.challenges[session_id][room_token][0]
-            file_path = captcha.file_name
-            file_meta = self.upload_file(file_path, room_token)
+            # NOTE: Delete the temporary/transient messages that the plugin has sent before sending
+            # them the new CAPTCHA
+            if len(user.temp_msgs_to_delete):
+                self.delete_messages(user.temp_msgs_to_delete)
+                user.temp_msgs_to_delete.clear()
 
-            refresh_times_left = self.retry_limit
-            if session_id in self.retry_record and room_token in self.retry_record[session_id]:
-                refresh_times_left -= self.retry_record[session_id][room_token]
+            # NOTE: Generate a new CAPTCHA for the user
+            captcha:                     Captcha               = self.refresh_captcha_handler(session_id, room_token)
+            captcha_attachment_metadata: dict[str, typing.Any] = self.upload_file(captcha.rel_file_path, room_token)
 
-            body = ""
-
+            # NOTE: Construct the message body to present to the user
             # Case 1: User is coming to the community for the first time
-            if refresh_times_left == self.retry_limit:
+            retries_remaining: int = self.retry_limit - user.retry_failures
+            body:              str = ""
+            if retries_remaining == self.retry_limit:
                 body += (f"Solve this CAPTCHA to read and send messages in {room_name}. ")
 
-            # Case 1 and 2: User is coming to the community for the first time or has refreshed but hasn't reached the limit
-            if refresh_times_left > 0:
+            if retries_remaining > 0:
                 body += (f"React to the image with the emoji shown in the image. ")
-                if refresh_times_left == self.retry_limit:
-                    body += (f"You can refresh the CAPTCHA once every {self.refresh_timeout} seconds by reacting with \U0001F504. ")
-                body += f"You have {refresh_times_left} time{'s' if refresh_times_left > 1 else ''} remaining to refresh."
+                if retries_remaining == self.retry_limit:
+                    body += (f"You can refresh the CAPTCHA once every {self.refresh_timeout_s} seconds by reacting with {self.refresh_emoji}. ")
+                body += f"You have {retries_remaining} time{'s' if retries_remaining > 1 else ''} remaining to refresh."
+            else:
+                body += f"You have hit the refresh limit. Please try to solve the current CAPTCHA by reacting with the emoji in the image."
 
-            # Case 3: User has refreshed and has reached the limit
-            elif refresh_times_left == 0:
-                body += (f"You have hit the refresh limit. "
-                        f"Please try to solve the current CAPTCHA by reacting with the emoji in the image.")
-
-            msg_id = self.post_message(
-                room_token,
-                body,
-                whisper_target=session_id,
-                no_plugins=True,
-                files=[file_meta,]
-            )
+            msg_id: MessageID | None = self.post_message(room_token=room_token, body=body, whisper_target=session_id, no_plugins=True, attachments_metadata=[captcha_attachment_metadata])
             print(f'Challenge message id: {msg_id}')
             if msg_id:
-                if refresh_times_left > 0:
-                    react_resp = self.post_reactions(
-                        room_token, msg_id, self.refresh_reaction
-                    )
-                    print(f'React response: {react_resp}')
-                    if b'error' in react_resp:
-                        print(f"Error adding reactions to whisper: {react_resp[b'error']}")
-                        return bt_serialize("ERROR")
-                _set(self.pending_requests, session_id, room_token, msg_id)
+                user.pending_captcha_msg_id                = msg_id
+                user.pending_captcha_refresh_emoji_applied = False
+                if retries_remaining > 0:
+                    # NOTE: Apply the refresh emoji onto our CAPTCHA message, example of response is:
+                    #   {b'status': b'OK'}
+                    react_resp: dict[bytes, bt_value] = self.post_reactions(room_token, msg_id, self.refresh_emoji)
+                    if b'status' in react_resp and react_resp[b'status'] == b'OK':
+                        user.pending_captcha_refresh_emoji_applied = True
+                    else:
+                        print(f"Error adding reactions to whisper: {react_resp}")
+                        return oxenc.bt_serialize("ERROR")
         except:
             import traceback
             print(traceback.format_exc())
-        return bt_serialize("OK")
+        return oxenc.bt_serialize("OK")
 
-    def refresh_capcha_handler(self, session_id, room_token):
-        _set(self.challenges, session_id, room_token, (self.captcha_manager.refresh(), time()))
+    def refresh_captcha_handler(self, session_id: SessionID, room_token: bytes) -> Captcha:
+        user: UserCaptchaState   = self.get_or_make_user(session_id, room_token)
+        user.challenge_captcha   = self.captcha_manager.refresh()
+        user.challenge_timestamp = time()
+        result                   = user.challenge_captcha
+        return result
 
-    def handle_refresh(self, msg_id, session_id, room_token, room_name):
-        if session_id not in self.retry_record or room_token not in self.retry_record[session_id]:
-            _set(self.retry_record, session_id, room_token, 0)
-        if self.retry_record[session_id][room_token] >= self.retry_limit:
+    def handle_refresh(self, msg_id: MessageID, session_id: SessionID, room_token: bytes, room_name: str):
+        user: UserCaptchaState | None = self.get_user(session_id, room_token)
+        if not user or user.retry_failures >= self.retry_limit:
             return
 
-        timeout = int(self.refresh_timeout - (time() - self.challenges[session_id][room_token][1]))
-        if timeout > 0:
-            unreact_resp = self.remove_reactions(
-                room_token, msg_id, self.refresh_reaction
-            )
-            print(f'React response: {unreact_resp}')
-            msg_id = self.post_message(
-                room_token,
-                f"You can refresh the CAPTCHA in {timeout} second{'s' if timeout > 1 else ''}.",
-                whisper_target=session_id,
-                no_plugins=True
-            )
-            print(f'Refresh timeout message id: {msg_id}')
-            if session_id not in self.pending_delete or room_token not in self.pending_delete[session_id]:
-                _set(self.pending_delete, session_id, room_token, [])
-            self.pending_delete[session_id][room_token].append(msg_id)
+        s_since_refresh: float = time() - user.challenge_timestamp
+        if s_since_refresh >= self.refresh_timeout_s:
+            user.retry_failures += 1                               # Increase their failure count
+            self.delete_message(msg_id)                            # Delete the old challenge message
+            self.post_challenge(room_token, session_id, room_name) # Submit a new challenge message
         else:
-            self.retry_record[session_id][room_token] += 1
-            self.delete_message(msg_id)
-            self.post_challenge(room_token, session_id, room_name)
+            # NOTE: Remove the refresh emoji from the old CAPTCHA example:
+            #   {b'status': b'OK'}
+            _                                          = self.remove_reactions(room_token, msg_id, self.refresh_emoji)
+            user.pending_captcha_refresh_emoji_applied = False
 
-    def handle_success(self, msg_id, session_id, room_token, room_name):
-        if self.write_timeout == 0:
-            self.post_message(
-                room_token,
-                f"Congratulations! You can now read and send messages in {room_name}.",
-                whisper_target=session_id,
-                no_plugins=True,
-            )
-            # Grant read and write permission immediately after receiving the correct reaction
-            self.set_user_room_permissions(
-                room_token=room_token, user_session_id=session_id, sec_from_now=None, read=True, write=True
-            )
+            # NOTE: Submit a message telling the user they must wait N seconds before re-requesting a CAPTCHA
+            timeout:    float            = self.refresh_timeout_s - s_since_refresh
+            new_msg_id: MessageID | None = self.post_message(
+                room_token     = room_token,
+                body           = f"You can refresh the CAPTCHA in {int(timeout)} second{'s' if timeout > 1 else ''}.",
+                whisper_target = session_id,
+                no_plugins     = True)
+
+            if new_msg_id:
+                user.temp_msgs_to_delete.append(new_msg_id)
+
+    def handle_success(self, msg_id: MessageID, session_id: SessionID, room_token: bytes, room_name: str):
+        immediate_write_access = False
+        welcome_message        = ""
+        if self.write_timeout <= 0:
+            welcome_message        = f"Congratulations! You can now read and send messages in {room_name}."
+            immediate_write_access = True
         else:
-            self.post_message(
-                room_token,
-                f"Congratulations! You will be able to read and send messages in {self.write_timeout} seconds.",
-                whisper_target=session_id,
-                no_plugins=True,
-            )
-            # Grant read permission immediately after receiving the correct reaction
-            self.set_user_room_permissions(
-                room_token=room_token, user_session_id=session_id, sec_from_now=None, read=True
-            )
-            # Grant write permission after {self.write_timeout} time
-            self.set_user_room_permissions(
-                room_token=room_token, user_session_id=session_id, sec_from_now=self.write_timeout, write=True
-            )
+            welcome_message        = f"Congratulations! You will be able to read and send messages in {self.write_timeout} seconds."
+
+        # NOTE: Welcome the user and grant them access
+        self.post_message(room_token, welcome_message, whisper_target=session_id, no_plugins=True)
+        self.set_user_room_permissions(room_token=room_token, user_session_id=session_id, sec_from_now=None, read=True, write=immediate_write_access)
+
+        # NOTE: If there's a write delay, we enqueue write access to the user
+        if not immediate_write_access:
+            assert self.write_timeout > 0
+            self.set_user_room_permissions(room_token=room_token, user_session_id=session_id, sec_from_now=self.write_timeout, write=True)
+
+        # NOTE: Cleanup, delete the captcha message and user state
+        # TODO: Maybe delete the user? We need to check how that the captcha plugin only sends the
+        # challenge to non-authenticated members
+        user: UserCaptchaState | None = self.get_user(session_id, room_token)
+        assert user
 
         self.delete_message(msg_id)
-        _delete(self.pending_requests, session_id, room_token)
+        user.pending_captcha_refresh_emoji_applied = False
+        user.pending_captcha_msg_id                = None
 
-    def handle_failure(self, msg_id, session_id, room_token):
-        if session_id not in self.retry_record or room_token not in self.retry_record[session_id]:
-            _set(self.retry_record, session_id, room_token, 0)
-        self.retry_record[session_id][room_token] += 1
-        retry_times_left = self.retry_limit - self.retry_record[session_id][room_token]
-        remaining = f"{retry_times_left} " + "attempt" + ("s" if retry_times_left > 1 else "")
-        body = (f"That was the wrong emoji. You’ll receive a new CAPTCHA in {self.retry_timeout} seconds. "
-                f"You have {remaining} remaining.") if retry_times_left > 0 else \
-            (f"That was the wrong emoji. You have reached the maximum number of attempts. "
-             f"Contact an Administrator of the community for further assistance")
+    def handle_failure(self, msg_id: MessageID, session_id: SessionID, room_token: bytes):
+        user: UserCaptchaState | None = self.get_user(session_id, room_token);
+        assert user
 
-        response_msg_id = self.post_message(
+        user.retry_failures      += 1
+        retries_remaining:   int  = self.retry_limit - user.retry_failures
+
+        body: str = "That was the wrong emoji."
+        if retries_remaining > 0:
+            remaining  = f"{retries_remaining} attempt" + ("s" if retries_remaining > 1 else "")
+            body      += f"You’ll receive a new CAPTCHA in {self.retry_timeout_s} seconds. You have {remaining} remaining."
+        else:
+            body += f"have reached the maximum number of attempts. Contact an Administrator of the community for further assistance"
+
+
+        new_msg_id: MessageID | None = self.post_message(
             room_token,
             body,
             whisper_target=session_id,
             no_plugins=True,
         )
-        _set(self.retry_jail, session_id, room_token, (time() + self.retry_timeout))
-        if session_id not in self.pending_delete or room_token not in self.pending_delete[session_id]:
-            _set(self.pending_delete, session_id, room_token, [])
-        self.pending_delete[session_id][room_token].append(response_msg_id)
+
+        user.retry_jail = time() + self.retry_timeout_s
+        if new_msg_id: # TODO: Handle message failure
+            user.temp_msgs_to_delete.append(new_msg_id)
 
         self.delete_message(msg_id)
-        _delete(self.pending_requests, session_id, room_token)
+        user.pending_captcha_msg_id                = None
+        user.pending_captcha_refresh_emoji_applied = False
 
+    @typing.override
     def reaction_posted(self, m: oxenmq.Message):
-        req = bt_deserialize(m.dataview()[0])
-        print(f"reaction_posted, req = {req}")
-        msg_id = req[b'msg_id']
-        session_id = req[b'session_id']
-        room_token = req[b'room_token']
-        room_name = req[b'room_name'].decode('utf-8')
-        if (
-                session_id in self.pending_requests
-                and room_token in self.pending_requests[session_id]
-                and msg_id == self.pending_requests[session_id][room_token]
-                and session_id in self.challenges
-                and room_token in self.challenges[session_id]
-                and self.challenges[session_id][room_token] is not None
-        ):
-            print(f"reaction_posted, correct session_id, room, and msg_id")
-            reaction = req[b'reaction'].decode('utf-8')
+        # NOTE: Example
+        #  {b'is_admin': 0, b'is_mod': 0, b'msg_id': 8, b'reaction': b'\xf0\x9f\x94\x84',
+        #   b'room_id': 1, b'room_name': b'foobar2', b'room_token': b'foobar2',
+        #   b'session_id': b'1500784b7c2096f6ed811b25c53a63e551954ee6778c7ae4437cb01c4b01fb4a09',
+        #   b'user_id': 3}
+        req: dict[bytes, bt_value] = oxenc.bt_deserialize(m.dataview()[0])
 
-            if reaction == self.refresh_reaction:
+        msg_id     = typing.cast(MessageID, req[b'msg_id'])
+        session_id = typing.cast(SessionID, req[b'session_id'])
+        room_token = typing.cast(bytes, req[b'room_token'])
+        room_name  = typing.cast(bytes, req[b'room_name']).decode('utf-8')
+
+        user: UserCaptchaState | None = self.get_user(session_id, room_token)
+        if user and user.pending_captcha_msg_id == msg_id and user.challenge_captcha:
+            print(f"reaction_posted, correct session_id, room, and msg_id")
+            reaction = typing.cast(bytes, req[b'reaction']).decode('utf-8')
+            if reaction == self.refresh_emoji:
                 print(f"{session_id} request refreshing challenge.")
                 self.handle_refresh(msg_id, session_id, room_token, room_name)
-            elif reaction == self.challenges[session_id][room_token][0].answer:
+            elif reaction == user.challenge_captcha.answer:
                 print(f"Granting permissions to {session_id} for room with token {room_token}")
                 self.handle_success(msg_id, session_id, room_token, room_name)
             else:
