@@ -56,12 +56,12 @@ def run_captcha_plugin(db: types.ModuleType | None = None, ini: str = "captcha.i
         return
 
     # Overridable config fields
-    captcha_name:            str        = cp.get   ('plugin', 'name',            fallback="CAPTCHA")
-    captcha_retry_limit:     int | None = cp.getint('plugin', 'retry_limit',     fallback=None)
-    captcha_write_timeout:   int | None = cp.getint('plugin', 'write_timeout',   fallback=None)
-    captcha_refresh_timeout: int | None = cp.getint('plugin', 'refresh_timeout', fallback=None)
-    captcha_retry_timeout:   int | None = cp.getint('plugin', 'retry_timeout',   fallback=None)
-    sogs_address:            str        = cp.get   ('sogs',   'sogs_address',    fallback=sogs.config.OMQ_LISTEN)
+    captcha_name:              str        = cp.get   ('plugin', 'name',              fallback="CAPTCHA")
+    captcha_captcha_limit:     int | None = cp.getint('plugin', 'captcha_limit',     fallback=None)
+    captcha_write_timeout_s:   int | None = cp.getint('plugin', 'write_timeout',     fallback=None)
+    captcha_refresh_timeout_s: int | None = cp.getint('plugin', 'refresh_timeout_s', fallback=None)
+    captcha_retry_timeout_s:   int | None = cp.getint('plugin', 'retry_timeout_s',   fallback=None)
+    sogs_address:              str        = cp.get   ('sogs',   'sogs_address',      fallback=sogs.config.OMQ_LISTEN)
 
     # Instantiate the plugin
     from sogs.plugins.captcha_plugin import CaptchaPlugin
@@ -70,14 +70,14 @@ def run_captcha_plugin(db: types.ModuleType | None = None, ini: str = "captcha.i
                            ed_privkey      = captcha_privkey.encode(),
                            ed_pubkey       = captcha_privkey.verify_key.encode(),
                            display_name    = captcha_name)
-    if captcha_retry_limit:
-        plugin.retry_limit = captcha_retry_limit
-    if captcha_retry_timeout:
-        plugin.retry_timeout = captcha_retry_timeout
-    if captcha_refresh_timeout:
-        plugin.refresh_timeout_s = captcha_refresh_timeout
-    if captcha_write_timeout:
-        plugin.write_timeout = captcha_write_timeout
+    if captcha_captcha_limit:
+        plugin.captcha_limit = captcha_captcha_limit
+    if captcha_retry_timeout_s:
+        plugin.retry_timeout_s = captcha_retry_timeout_s
+    if captcha_refresh_timeout_s:
+        plugin.refresh_timeout_s = captcha_refresh_timeout_s
+    if captcha_write_timeout_s:
+        plugin.write_timeout_s = captcha_write_timeout_s
 
     if db is not None:
         from sogs.db import query

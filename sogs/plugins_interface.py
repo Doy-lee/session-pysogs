@@ -22,6 +22,14 @@ bt_value: typing.TypeAlias = (
 RoomToken:  typing.TypeAlias = bytes
 TimestampS: typing.TypeAlias = float
 MessageID:  typing.TypeAlias = int
+
+# Represents the Session account as bytes, i.e. 1b Blinding Prefix + 32b X25519 Public Key
+# This is not to be confused with the value of the Session ID that is typically returned from the
+# SOGS server OMQ response which is the hex representation of the Session account but held in a
+# bytes object,
+# e.g.
+#   OMQ Session ID response => b"15aaaa.."       (66 bytes)
+#   `SessionID`             => b"\x15\xaa\xaa.." (33 bytes)
 SessionID:  typing.TypeAlias = bytes
 
 def pad_message(payload: bytes) -> bytearray:
@@ -46,7 +54,7 @@ class RoomReadRequest:
     room_id:    int
     room_name:  str
     room_token: bytes
-    session_id: bytes
+    session_id: SessionID
     user_id:    int
 
     @classmethod
@@ -54,7 +62,7 @@ class RoomReadRequest:
         result = RoomReadRequest(room_id     = typing.cast(int, src[b'room_id']),
                                   room_name  = typing.cast(bytes, src[b'room_name']).decode('utf-8'),
                                   room_token = typing.cast(bytes, src[b'room_token']),
-                                  session_id = typing.cast(bytes, src[b'session_id']),
+                                  session_id = bytes.fromhex(typing.cast(bytes, src[b'session_id']).decode('utf-8')),
                                   user_id    = typing.cast(int, src[b'user_id']),)
         return result
 
@@ -81,7 +89,7 @@ class Plugin:
     conn:                 oxenmq.ConnectionID | None                          = None
 
     # Post initialised
-    session_id:      str                 = dataclasses.field(init=False) # Hex
+    session_id:      SessionID           = dataclasses.field(init=False) # 33 byte session account
     blind25_pubkey:  bytes               = dataclasses.field(init=False) # 25 blinded x25519 pubkey
     blind25_privkey: bytes               = dataclasses.field(init=False) # 25 blinded x25519 prvkey
     blind15_pubkey:  bytes               = dataclasses.field(init=False) # TODO: x
@@ -106,7 +114,7 @@ class Plugin:
         self.blind25_privkey                           = blind25_keypair.privkey
         self.blind15_pubkey                            = blind15_keypair.pubkey
         self.blind15_privkey                           = blind15_keypair.privkey
-        self.session_id                                = '15' + self.blind15_pubkey.hex()
+        self.session_id                                = b"\x15" + self.blind15_pubkey
 
         # Setup networking to SOGS via OMQ
         self.omq = oxenmq.OxenMQ(privkey=self.x_privkey, pubkey=self.x_pubkey, log_level=oxenmq.LogLevel.debug)
@@ -118,29 +126,35 @@ class Plugin:
         cat.add_request_command("post_message_command", self.post_message_command)
         cat.add_request_command("request_read",         self.request_read)
 
-    def finish_init(self):
+    def _require_conn_established(self) -> oxenmq.ConnectionID:
+        assert self.conn, "Plugin misuse: Connection to SOGS not established yet, plugin.run() must be called first"
+        return self.conn
+
+    def _on_registered_after_hello(self):
+        conn: oxenmq.ConnectionID = self._require_conn_established()
         if len(self.pre_slash_handlers) or self.request_read_handler:
             pre_commands: list[str] = list(self.pre_slash_handlers.keys())
             if self.request_read_handler:
                 pre_commands.append('/request_read')
 
             print(f"Registering pre-commands: {pre_commands}")
-            self.omq.send(self.conn, "plugin.register_pre_commands", oxenc.bt_serialize({'commands': pre_commands}))
+            self.omq.send(conn, "plugin.register_pre_commands", oxenc.bt_serialize({b'commands': pre_commands}))
 
         if len(self.post_slash_handlers):
             post_commands: list[str] = list(self.post_slash_handlers.keys())
 
             print(f"Registering post-commands: {post_commands}")
-            self.omq.send(self.conn, "plugin.register_post_commands", oxenc.bt_serialize({'commands': list(post_commands)}))
+            self.omq.send(conn, "plugin.register_post_commands", oxenc.bt_serialize({b'commands': list(post_commands)}))
 
     def say_hello(self):
+        conn: oxenmq.ConnectionID = self._require_conn_established()
         try:
-            future: oxenmq.ResultFuture = self.omq.request_future(self.conn, "plugin.hello", oxenc.bt_serialize(self.session_id), request_timeout=timedelta(seconds=10))
+            future: oxenmq.ResultFuture = self.omq.request_future(conn, "plugin.hello", oxenc.bt_serialize(self.session_id.hex().encode()), request_timeout=timedelta(seconds=10))
             resp:   bytes               = typing.cast(bytes, oxenc.bt_deserialize(future.get()[0]))
             if resp == b'OK':
                 return
             elif resp == b"REGISTER":
-                self.finish_init()
+                self._on_registered_after_hello()
                 self.running = True
                 return
             print(f"Plugin hello error from sogs: {resp}")
@@ -284,7 +298,7 @@ class Plugin:
         self,
         room_name,
         room_token,
-        user_session_id,
+        user_session_id: SessionID,
         message_data,
         username,
         *args,
@@ -302,16 +316,15 @@ class Plugin:
         ]  # not used, but kept here for now to save confusion about config loading
         public = reply_settings[2]
 
+        user_session_id_hex = user_session_id.hex()
         body = rf.format(
-            profile_name=(user_session_id.decode('ascii') if username is None else username),
-            profile_at="@" + user_session_id.decode('ascii'),
-            room_name=room_name.decode('utf-8'),
-            room_token=room_token,
+            profile_name = user_session_id_hex if username is None else username,
+            profile_at   = f"@{user_session_id_hex}",
+            room_name    = room_name.decode('utf-8'),
+            room_token   = room_token,
         ).encode()
 
-        self.post_message(
-            room_token, body, whisper_target="" if public else user_session_id.decode('ascii')
-        )
+        self.post_message(room_token, body, whisper_target=None if public else user_session_id)
 
     def set_user_room_permissions(
         self,
@@ -372,20 +385,28 @@ class Plugin:
             request_timeout=timedelta(seconds=1),
         ).get()[0]
 
-    def delete_messages(self, msg_ids: list[int]):
+    def delete_messages(self, msg_ids: list[MessageID]) -> bool:
+        conn: oxenmq.ConnectionID = self._require_conn_established()
         """
         Tells sogs to delete the specified message(s). The message(s) must have been created by this
         plugin.
         """
-        # TODO: Return if the delete was successful
+        result = True
         if len(msg_ids):
-            print(f"Delete message id {msg_ids}")
-            self.omq.send(self.conn, "plugin.delete_message", oxenc.bt_serialize({'msg_ids': msg_ids}))
+            resp: dict[bytes, bt_value] = oxenc.bt_deserialize(
+                self.omq.request_future(
+                    conn, "plugin.delete_message", oxenc.bt_serialize({b'msg_ids': msg_ids})
+                ).get()[0]
+            )
+            if b'status' in resp and resp[b'status'] == b'OK':
+                result = True
+        return result
 
-    def delete_message(self, msg_id: int):
-        self.delete_messages([msg_id])
+    def delete_message(self, msg_id: int) -> bool:
+        result = self.delete_messages([msg_id])
+        return result
 
-    def post_message(self, room_token: bytes, body: str, *, whisper_target: bytes | None = None, no_plugins: bool = False, attachments_metadata: list[dict[str, typing.Any]] | None = None) -> MessageID | None:
+    def post_message(self, room_token: bytes, body: str, *, whisper_target: SessionID | None = None, no_plugins: bool = False, attachments_metadata: list[dict[str, typing.Any]] | None = None) -> MessageID | None:
         from sogs import session_pb2 as protobuf
         from time import time
         self.last_post_time = max(self.last_post_time + 1, int(time() * 1000))
@@ -422,7 +443,7 @@ class Plugin:
     def inject_message(
         self,
         room_token:     bytes,
-        session_id:     str,
+        session_id:     SessionID,
         message:        bytes,
         sig:            bytes,
         *,
@@ -431,22 +452,22 @@ class Plugin:
         no_plugins:     bool             = False,
         attachment_ids: list[int] | None = None,
     ) -> MessageID | None:
-        req = {
-            "room_token": room_token,
-            "session_id": session_id,
-            "message": message,
-            "sig": sig,
-            "whisper_mods": whisper_mods,
+        req: dict[bytes, typing.Any] = {
+            b"room_token":   room_token,
+            b"session_id":   session_id.hex(),
+            b"message":      message,
+            b"sig":          sig,
+            b"whisper_mods": whisper_mods,
         }
 
         if whisper_target:
-            req["whisper_target"] = whisper_target
+            req[b"whisper_target"] = whisper_target.hex()
 
         if no_plugins:
-            req["no_plugins"] = True
+            req[b"no_plugins"] = True
 
         if attachment_ids:
-            req["files"] = attachment_ids
+            req[b"files"] = attachment_ids
 
         resp = oxenc.bt_deserialize(
             self.omq.request_future(
@@ -716,7 +737,7 @@ class SogsFilterPlugin(Plugin):
                 self.reply(
                     request[b"room_name"],
                     request[b"room_token"],
-                    request[b"session_id"],
+                    bytes.fromhex(request[b"session_id"].decode()),
                     request[b"message_data"],
                     msg.username,
                     reply_settings=reply_settings,
@@ -746,7 +767,7 @@ class SogsFilterPlugin(Plugin):
                 self.reply(
                     request[b"room_name"],
                     request[b"room_token"],
-                    request[b"session_id"],
+                    bytes.fromhex(request[b"session_id"].decode()),
                     request[b"message_data"],
                     msg.username,
                     reply_settings=reply_settings,

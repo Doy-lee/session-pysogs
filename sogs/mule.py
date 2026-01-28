@@ -391,7 +391,7 @@ def setup_omq():
     plugin.add_request_command("hello", plugin_hello)
     plugin.add_command("register_pre_commands", plugin_register_pre_command)
     plugin.add_command("register_post_commands", plugin_register_post_command)
-    plugin.add_command("delete_message", plugin_delete_message)
+    plugin.add_request_command("delete_message", plugin_delete_message)
     plugin.add_request_command("post_reactions", plugin_post_reactions)
     plugin.add_request_command("remove_reactions", plugin_remove_reactions)
     plugin.add_request_command("message", plugin_insert_message)
@@ -571,18 +571,26 @@ def plugin_delete_message(m: oxenmq.Message):
         msg_ids = req[b'msg_ids']
     if b'msg_id' in req:
         msg_ids.append(req[b'msg_id'])
-    with db.transaction():
-        rowcount = query(
-            """DELETE FROM message_details WHERE id IN :msg_ids AND "user" = :user""",
-            msg_ids=msg_ids,
-            user=plugin_conn_info[m.conn]['user'].id,
-            bind_expanding=['msg_ids'],
-        )
-        if rowcount:
-            app.logger.warning(f"Deleted message with ids {msg_ids}")
-        else:
-            app.logger.warning(f"(apparently?) failed to delete message with ids {msg_ids}")
 
+    success = False
+    try:
+        with db.transaction():
+            rowcount = query(
+                """DELETE FROM message_details WHERE id IN :msg_ids AND "user" = :user""",
+                msg_ids=msg_ids,
+                user=plugin_conn_info[m.conn]['user'].id,
+                bind_expanding=['msg_ids'],
+            )
+            if rowcount:
+                success = True
+                app.logger.info(f"Deleted message with ids {msg_ids}")
+    except Exception as e:
+        app.logger.warning(f"Error: {e}")
+
+    if not success:
+        app.logger.warning(f"Failed to delete message with ids {msg_ids}")
+        return bt_serialize({'error': 'Message deletion failed due to DB error'})
+    return bt_serialize({'status': 'OK'})
 
 @needs_app_context
 @log_exceptions
