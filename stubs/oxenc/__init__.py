@@ -31,14 +31,7 @@ def bt_serialize(val: Any) -> bytes:
     """
     ...
 
-
-@overload
-def bt_deserialize(val: bytes) -> Any: ...
-@overload
-def bt_deserialize(val: bytearray) -> Any: ...
-@overload
-def bt_deserialize(val: memoryview) -> Any: ...
-def bt_deserialize(val: bytes | bytearray | memoryview) -> bt_value:
+def bt_deserialize(val: bytes | bytearray | memoryview) -> Any:
     """Deserialize a bencoded value from bytes-like data.
 
     Accepts any buffer protocol object (bytes, bytearray, memoryview, etc.).

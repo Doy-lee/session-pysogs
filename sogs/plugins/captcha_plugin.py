@@ -5,7 +5,7 @@ import datetime
 import enum
 
 from sogs.plugins.captcha import CaptchaManager, Captcha
-from sogs.plugins_interface import *
+from sogs.plugin import *
 
 class LogFormatter(logging.Formatter):
     @typing_extensions.override
@@ -194,7 +194,8 @@ class CaptchaPlugin(Plugin):
 
             if s_remaining <= 0 and not user.captcha_solved_grant_access:
                 resp = self.set_user_room_permissions(room_token=room_token, user_session_id=session_id, read=True, write=True)
-                user.captcha_solved_grant_access = resp == b'OK'
+                assert resp != SetUserRoomPermissionsResponse.InvalidArg
+                user.captcha_solved_grant_access = resp == SetUserRoomPermissionsResponse.Ok
 
         # NOTE: Handle refresh of the CAPTCHA. When a user requests a refresh, the refresh state is
         # set to a non-nil state. If a refresh is requested the user must wait a duration of
