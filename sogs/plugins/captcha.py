@@ -12,7 +12,7 @@ import dataclasses
 class Captcha:
     answer:        str # Answer to the CAPTCHA challenge (e.g. the emoji string)
     rel_file_path: str # Relative file path from CWD to the CAPTCHA image
-    async def generate_captcha(self, executor, width, height):
+    async def generate_captcha(self, executor: ThreadPoolExecutor, width: int, height: int):  # pyright: ignore[reportUnusedParameter]
         pass
 
 class EmojiCaptcha(Captcha):
@@ -96,7 +96,7 @@ class EmojiCaptcha(Captcha):
             rel_file_path=rel_file_path
         )
 
-    async def generate_captcha(self, executor, width=WIDTH, height=HEIGHT):
+    async def generate_captcha(self, executor: ThreadPoolExecutor, width: int = WIDTH, height: int = HEIGHT):
         # Create a new image with white background
         image = Image.new("RGB", (width, height), "#626262")
         draw = ImageDraw.Draw(image)
@@ -132,7 +132,8 @@ class EmojiCaptcha(Captcha):
 
 class CaptchaManager:
     IMAGES_DIR = "async_generated_images"
-    def __init__(self, initial_count=200):
+
+    def __init__(self, initial_count: int = 200):
         self.captcha_list = []
         os.makedirs(CaptchaManager.IMAGES_DIR, exist_ok=True)
         start_time = time.time()

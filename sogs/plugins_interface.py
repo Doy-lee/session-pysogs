@@ -329,22 +329,17 @@ class Plugin:
     def set_user_room_permissions(
         self,
         *,
-        room_token=None,
-        room_id=None,
-        user_session_id=None,
-        user_id=None,
-        sec_from_now=None,
-        **perms,
+        room_token:      bytes | None    = None,
+        room_id:         int | None      = None,
+        user_session_id: SessionID| None = None,
+        user_id:         int | None      = None,
+        sec_from_now:    int | None      = None,
+        **perms:         bool | None,
     ):
         if sec_from_now:
-            if not isinstance(sec_from_now, int):
-                print("future permissions must be set an integer number of seconds from now.")
-                return
-
             if not 0 < sec_from_now < 1_000_000_000:
                 print("future permissions must not be set *that* far in the future or past...")
                 return
-
             for k in ('accessible', 'read', 'write', 'upload'):
                 if k in perms and perms[k] is None:
                     print("Setting permissions to 'None' is invalid for future permission changes.")
@@ -363,7 +358,7 @@ class Plugin:
         else:
             req['room_id'] = room_id
         if user_session_id:
-            req['user_session_id'] = user_session_id
+            req['user_session_id'] = user_session_id.hex()
         else:
             req['user_id'] = user_id
 
