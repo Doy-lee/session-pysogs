@@ -5,6 +5,8 @@ import oxenmq
 import oxenc
 import logging
 import enum
+import typing_extensions
+import datetime
 
 from typing          import Callable
 from nacl.encoding   import HexEncoder
@@ -13,7 +15,19 @@ from datetime        import timedelta
 from time            import time
 from sogs.model.post import Post
 
-log = logging.Logger("PLUGIN")
+class LogFormatter(logging.Formatter):
+    @typing_extensions.override
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        dt     = datetime.datetime.fromtimestamp(record.created)
+        result = dt.strftime('%y-%m-%d %H:%M:%S.%f')[:-3]
+        return result
+
+log_formatter = LogFormatter('%(asctime)s %(levelname)s %(name)s %(message)s')
+console_log_handler = logging.StreamHandler()
+console_log_handler.setFormatter(log_formatter)
+
+log = logging.Logger('PLUGIN')
+log.addHandler(console_log_handler)
 
 # Represents the Session account as bytes, i.e. 1b Blinding Prefix + 32b X25519 Public Key
 # This is not to be confused with the value of the Session ID that is typically returned from the
@@ -38,6 +52,23 @@ bt_value: typing.TypeAlias = (
 )
 
 @dataclasses.dataclass
+class ReplySettings:
+    """Settings controlling how the plugin replies to a filtered message.
+    Attributes:
+        reply_formats: List of format strings where one is chosen at random to use as the reply. In
+                       the reply, the following python placeholders are supported:
+                       {profile_name}, {profile_at}, {room_name}, {room_token}.
+
+                       e.g. reply_format_str = "Hey {profile_name}! No swearing here in {room_name}"
+
+        profile_name:  Display name for the reply
+        public:        If True the reply is posted publicly; if False it is whispered to the user.
+    """
+    reply_formats: list[str] = dataclasses.field(default_factory=list)
+    profile_name:  str       = 'SOGS'
+    public:        bool      = False
+
+@dataclasses.dataclass
 class RoomReadRequest:
     room_id:    int
     room_name:  str
@@ -53,6 +84,38 @@ class RoomReadRequest:
                                  session_id = bytes.fromhex(typing.cast(bytes, src[b'session_id']).decode('utf-8')),
                                  user_id    = typing.cast(int, src[b'user_id']),)
         return result
+
+@dataclasses.dataclass
+class FilterMessageRequest:
+    alt_id:       SessionID # 15-blinded x25519 pubkey (w/ 15-prefix)
+    data_size:    int
+    filtered:     bool
+    is_mod:       bool
+    message_data: bytes
+    room_id:      int
+    room_name:    str
+    room_token:   bytes
+    session_id:   SessionID # 25-blinded x25519 pubkey (w/ 25-prefix)
+    sig:          bytes
+    user_id:      int
+    whisper_mods: bool
+
+    @classmethod
+    def from_bencode(cls, src: dict[bytes, bt_value]):
+        result = FilterMessageRequest(alt_id       = bytes.fromhex(typing.cast(bytes, src[b'alt_id']).decode('utf-8')),
+                                      data_size    = typing.cast(int,   src[b'data_size']),
+                                      filtered     = typing.cast(bool,  src[b'filtered']),
+                                      is_mod       = typing.cast(bool,  src[b'is_mod']),
+                                      message_data = typing.cast(bytes, src[b'message_data']),
+                                      room_id      = typing.cast(int,   src[b'room_id']),
+                                      room_name    = typing.cast(bytes, src[b'room_name']).decode('utf-8'),
+                                      room_token   = typing.cast(bytes, src[b'room_token']),
+                                      session_id   = bytes.fromhex(typing.cast(bytes, src[b'session_id']).decode('utf-8')),
+                                      sig          = bytes.fromhex(typing.cast(bytes, src[b'sig']).decode('utf-8')),
+                                      user_id      = typing.cast(int,   src[b'user_id']),
+                                      whisper_mods = typing.cast(bool,  src[b'whisper_mods']))
+        return result
+
 
 class SetUserRoomPermissionsResponse(enum.Enum):
     NoSuchRoom = 0
@@ -269,20 +332,38 @@ class Plugin:
         self.register_command(command, handler, False)
 
     def filter_message(self, m: oxenmq.Message):
-        log.debug(f"Filter message received: {m}")
         try:
-            request = oxenc.bt_deserialize(m.dataview()[0])
-            resp    = self.filter(request)
+            req_raw: dict[bytes, bt_value] = oxenc.bt_deserialize(m.dataview()[0])
+            req                            = FilterMessageRequest.from_bencode(req_raw)
+
+            log.debug(f"Filter message received: {req_raw}")
+            # NOTE: Example
+            #
+            # {b'alt_id': b'15dae60d80fa50f570831ddd02345556120c7508f749fd15f24002ff2a74b436cd',
+            #  b'data_size': 160,
+            #  b'filtered': 0,
+            #  b'is_mod': 0,
+            #  b'message_data': b"\n\x1c\n\x07testttt\xaa\x06\r\n\tAnonymous\x18\x00\xd0\x06\x01`\x00h\x00x\xaf\xff\xa7\xc2\xc03\x8a\x01@Q\x13Ki\xde\xfc\x7f=\x81M\xc0\x91\x96\x82\xcc\xd7\xb0%kVC\xd5\x8aYo(\xdf\xbf\xdbj(\xbf5\xbd,5\x81\xcb\x8a\xd0O\xa2\x8b\xe8\x12'\x02:1b\xfd:B\xe3\x04\xce\xd4O\xbf=I\xe3$\x02\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+            #  b'room_id': 3,
+            #  b'room_name': b'foobar4',
+            #  b'room_token': b'foobar4',
+            #  b'session_id': b'25a9ae1d59778a30abb54e9a6bbbd4832a40c27bb92afbcda0f28df3094d2b55a4',
+            #  b'sig': b'/Cs\xab\xea\xfb\xa29\xee\xaao\x8cJ,\xba\\\x86g#Y<\xca\xce\x9a\x99\x85\x88\xca\xd6\xb6\x96\xe2/\xf7Q\x043b!\xb9\xf7\xcc\r\xbf(\xbd\x80\xba@`\xa1\x00\x94\x10V\xf2U\xa8\xc4\xd7k\xe3\xb0\r',
+            #  b'user_id': 5,
+            #  b'whisper_mods': 0}
+
+            resp = self.filter(req)
             if resp not in self.FILTER_RESPONSES:
                 log.warning(f"plugin.filter() must return one of {Plugin.FILTER_RESPONSES}")
                 return oxenc.bt_serialize("REJECT")
+
             print(f"filter_message returning '{resp}' as filter response")
             return oxenc.bt_serialize(resp)
         except Exception as e:
             print(f"Exception filtering message: {e}")
             return oxenc.bt_serialize("REJECT")
 
-    def filter(self, request):  # pyright: ignore[reportUnusedParameter]
+    def filter(self, req: FilterMessageRequest):  # pyright: ignore[reportUnusedParameter]
         """
         Users may override this function for custom filtering, or supply a callable filter object
 
@@ -292,28 +373,19 @@ class Plugin:
 
     def reply(
         self,
-        room_name:       str,
+        room_name:       bytes,
         room_token:      bytes,
         user_session_id: SessionID,
         message_data,
-        username,
+        username: str,
         *args,
-        reply_settings=None,
+        reply_settings: ReplySettings,
     ):
         """Call this from your filter() override when you want to reply to a user message, e.g.
         "hey no swearing here"
         """
         from random import choice
-
-        if not reply_settings:
-            print("plugin.reply called with no reply_settings")
-            return
-
-        rf = choice(reply_settings[0])
-        reply_name = reply_settings[
-            1
-        ]  # not used, but kept here for now to save confusion about config loading
-        public = reply_settings[2]
+        rf = choice(reply_settings.reply_formats)
 
         user_session_id_hex = user_session_id.hex()
         body = rf.format(
@@ -323,7 +395,7 @@ class Plugin:
             room_token   = room_token,
         ).encode()
 
-        self.post_message(room_token, body, whisper_target=None if public else user_session_id)
+        self.post_message(room_token, body, whisper_target=None if reply_settings.public else user_session_id)
 
     def set_user_room_permissions(
         self,
@@ -714,7 +786,7 @@ class SogsFilterPlugin(Plugin):
 
         print(self.room_settings)
 
-    def get_reply_settings(self, room_token, *args, filter_type='profanity', filter_lang=None):
+    def get_reply_settings(self, room_token, *args, filter_type='profanity', filter_lang=None) -> ReplySettings | None:
         if not self.config.FILTER_SETTINGS:
             return None
 
@@ -749,7 +821,7 @@ class SogsFilterPlugin(Plugin):
         if reply_format is None:
             return None
 
-        return (reply_format, profile_name, public)
+        return ReplySettings(reply_formats=reply_format, profile_name=profile_name, public=public)
 
     def filter(self, request):
         # is_mod should be "mod" but is empty if not, so just check len

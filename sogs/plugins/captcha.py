@@ -428,8 +428,8 @@ class EmojiCaptcha(Captcha):
 
         # NOTE: Ensure emoji is in bounds and fully visible w/ some padding
         emoji_margin: float = int(font.size * 0.5) + font.size;
-        emoji_x:      float = float(random.randint(0, int(width - font.size)))
-        emoji_y:      float = float(random.randint(0, int(height - font.size)))
+        emoji_x:      float = float(random.randint(0, int(width - emoji_margin)))
+        emoji_y:      float = float(random.randint(0, int(height - emoji_margin)))
         assert width - emoji_margin > 0 and height - emoji_margin > 0
         _ = draw.text((emoji_x, emoji_y), self.answer, font=font, embedded_color=True)
 
@@ -441,7 +441,7 @@ class EmojiCaptcha(Captcha):
 @dataclasses.dataclass
 class CaptchaManager:
     data_dir:     str           = "./.sogs/plugins/captcha"
-    batch_size:   int           = 200
+    batch_size:   int           = 32
     captcha_list: list[Captcha] = dataclasses.field(default_factory=list)
     font_path:    str           = os.path.dirname(os.path.abspath(__file__)) + '/NotoColorEmoji.ttf'
     font_size:    int           = 109 # Suitable font size specifically for NotoColorEmoji
@@ -450,13 +450,10 @@ class CaptchaManager:
 
     def __post_init__(self):
         os.makedirs(self.data_dir, exist_ok=True)
-        start_time = time.time()
         asyncio.run(self.batch_generate_captcha(self.batch_size))
-        end_time = time.time()
-        execution_time = end_time - start_time
-        print(f"Execution time: {execution_time} seconds")
 
     async def batch_generate_captcha(self, count: int):
+        start_time = time.time()
         font: ImageFont.FreeTypeFont = ImageFont.truetype(self.font_path, self.font_size, layout_engine=ImageFont.Layout.RAQM)
         with ThreadPoolExecutor(max_workers=8) as executor:
             tasks = []
@@ -465,8 +462,9 @@ class CaptchaManager:
                 self.captcha_list.append(captcha)
                 tasks.append(captcha.generate_captcha(executor, width=self.width, height=self.height, font=font, color_set=DEFAULT_COLOUR_SET))
             await asyncio.gather(*tasks)
+        print(f"Generated {self.batch_size} CAPTCHAs in {time.time() - start_time:.4f}s")
 
     def refresh(self) -> Captcha:
         if len(self.captcha_list) == 0:
-            asyncio.run(self.batch_generate_captcha(20))
+            asyncio.run(self.batch_generate_captcha(self.batch_size))
         return self.captcha_list.pop()

@@ -1,25 +1,10 @@
 import dataclasses
 import logging
-import typing_extensions
-import datetime
 import enum
+from time import time
 
 from sogs.plugins.captcha import CaptchaManager, Captcha
 from sogs.plugin import *
-
-class LogFormatter(logging.Formatter):
-    @typing_extensions.override
-    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
-        dt     = datetime.datetime.fromtimestamp(record.created)
-        result = dt.strftime('%y-%m-%d %H:%M:%S.%f')[:-3]
-        return result
-
-log_formatter = LogFormatter('%(asctime)s %(levelname)s %(name)s %(message)s')
-console_log_handler = logging.StreamHandler()
-console_log_handler.setFormatter(log_formatter)
-
-log = logging.Logger('CAPTCHA')
-log.addHandler(console_log_handler)
 
 class RefreshState(enum.Enum):
     Nil     = 0
@@ -38,14 +23,14 @@ class CaptchaState(enum.Enum):
 class UserCaptchaState:
     # Refreshing of CAPTCHAs state
     refresh_state:                        RefreshState     = RefreshState.Nil
-    refresh_msg_id:                       MessageID | None = 0
+    refresh_msg_id:                       MessageID | None = None
 
     # CAPTCHA state in general
     captcha_state:                        CaptchaState     = CaptchaState.Nil
-    captcha_failed_next_attempt_at_ts:    TimestampS       = 0 # Timestamp at which the user can retry again. None if the user isn't jailed
+    captcha_failed_next_attempt_at_ts:    TimestampS       = 0.0 # Timestamp at which the user can retry again. None if the user isn't jailed
     captcha_attempts:                     int              = 0
     captcha_limit_msg_shown:              bool             = False
-    captcha_solved_grant_access_at_ts:    TimestampS       = 0
+    captcha_solved_grant_access_at_ts:    TimestampS       = 0.0
     captcha_solved_welcome_msg_shown:     bool             = False
     captcha_solved_grant_access:          bool             = False
 
@@ -177,8 +162,8 @@ class CaptchaPlugin(Plugin):
 
         if user.captcha_state == CaptchaState.Wait:
             if now >= user.captcha_failed_next_attempt_at_ts:
-                user.captcha_attempts  += 1
-                user.captcha_state  = CaptchaState.Ready
+                user.captcha_attempts += 1
+                user.captcha_state     = CaptchaState.Ready
 
         if user.captcha_state == CaptchaState.Solved:
             s_remaining: float = user.captcha_solved_grant_access_at_ts - now
@@ -193,7 +178,7 @@ class CaptchaPlugin(Plugin):
                     user.captcha_solved_welcome_msg_shown = True
 
             if s_remaining <= 0 and not user.captcha_solved_grant_access:
-                resp = self.set_user_room_permissions(room_token=room_token, user_session_id=session_id, read=True, write=True)
+                resp = self.set_user_room_permissions(room=room_token, user=session_id, read=True, write=True)
                 assert resp != SetUserRoomPermissionsResponse.InvalidArg
                 user.captcha_solved_grant_access = resp == SetUserRoomPermissionsResponse.Ok
 
