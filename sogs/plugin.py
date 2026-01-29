@@ -3,25 +3,17 @@ import typing
 import dataclasses
 import oxenmq
 import oxenc
+import logging
+import enum
 
-from typing import Callable
-from nacl.encoding import HexEncoder
-from nacl.signing import SigningKey
-from datetime import timedelta
-from time import time
+from typing          import Callable
+from nacl.encoding   import HexEncoder
+from nacl.signing    import SigningKey
+from datetime        import timedelta
+from time            import time
 from sogs.model.post import Post
 
-bt_value: typing.TypeAlias = (
-    int
-    | bytes
-    | str
-    | list["bt_value"]
-    | dict[bytes | str, "bt_value"]
-)
-
-RoomToken:  typing.TypeAlias = bytes
-TimestampS: typing.TypeAlias = float
-MessageID:  typing.TypeAlias = int
+log = logging.Logger("PLUGIN")
 
 # Represents the Session account as bytes, i.e. 1b Blinding Prefix + 32b X25519 Public Key
 # This is not to be confused with the value of the Session ID that is typically returned from the
@@ -31,23 +23,19 @@ MessageID:  typing.TypeAlias = int
 #   OMQ Session ID response => b"15aaaa.."       (66 bytes)
 #   `SessionID`             => b"\x15\xaa\xaa.." (33 bytes)
 SessionID:  typing.TypeAlias = bytes
+RoomToken:  typing.TypeAlias = bytes
+TimestampS: typing.TypeAlias = float
+MessageID:  typing.TypeAlias = int
 
-def pad_message(payload: bytes) -> bytearray:
-    # NOTE: Direct port of https://github.com/session-foundation/libsession-util/blob/dd5d7c006d95a138f3648e4d76a0754e3950245a/src/session_protocol.cpp#L382
-    PADDING_TERMINATING_BYTE = 0x80
-    SESSION_PROTOCOL_COMMUNITY_OR_1O1_MSG_PADDING = 160
-
-    # Calculate amount of padding required
-    padded_content_size = len(payload) + 1  # +1 for padding byte
-    bytes_for_padding = SESSION_PROTOCOL_COMMUNITY_OR_1O1_MSG_PADDING - (padded_content_size % SESSION_PROTOCOL_COMMUNITY_OR_1O1_MSG_PADDING)
-    padded_content_size += bytes_for_padding
-    assert padded_content_size % SESSION_PROTOCOL_COMMUNITY_OR_1O1_MSG_PADDING == 0
-
-    # Do the padding
-    result = bytearray(padded_content_size)
-    result[0:len(payload)] = payload
-    result[len(payload)] = PADDING_TERMINATING_BYTE
-    return result
+# Represents the different variants of data types that a primitive bencoded type can hold. These
+# values are produced and consumed by the module oxenc's bt_serialize/bt_deserialize functions.
+bt_value: typing.TypeAlias = (
+    int
+    | bytes
+    | str
+    | list["bt_value"]
+    | dict[bytes | str, "bt_value"]
+)
 
 @dataclasses.dataclass
 class RoomReadRequest:
@@ -60,11 +48,18 @@ class RoomReadRequest:
     @classmethod
     def from_bencode(cls, src: dict[bytes, bt_value]):
         result = RoomReadRequest(room_id     = typing.cast(int, src[b'room_id']),
-                                  room_name  = typing.cast(bytes, src[b'room_name']).decode('utf-8'),
-                                  room_token = typing.cast(bytes, src[b'room_token']),
-                                  session_id = bytes.fromhex(typing.cast(bytes, src[b'session_id']).decode('utf-8')),
-                                  user_id    = typing.cast(int, src[b'user_id']),)
+                                 room_name  = typing.cast(bytes, src[b'room_name']).decode('utf-8'),
+                                 room_token = typing.cast(bytes, src[b'room_token']),
+                                 session_id = bytes.fromhex(typing.cast(bytes, src[b'session_id']).decode('utf-8')),
+                                 user_id    = typing.cast(int, src[b'user_id']),)
         return result
+
+class SetUserRoomPermissionsResponse(enum.Enum):
+    NoSuchRoom = 0
+    NoSuchUser = 1
+    Error      = 2
+    InvalidArg = 3
+    Ok         = 4
 
 @dataclasses.dataclass
 class Plugin:
@@ -74,11 +69,11 @@ class Plugin:
     FILTER_RESPONSES:     typing.ClassVar[tuple[str, str, str]] = (FILTER_ACCEPT, FILTER_REJECT, FILTER_REJECT_SILENT)
 
     # User initialised
-    ed_privkey:   bytes # ed25519
-    ed_pubkey:    bytes # ed25519
-    display_name: str
-    sogs_address: str
-    sogs_pubkey:  bytes
+    ed_privkey:           bytes # ed25519
+    ed_pubkey:            bytes # ed25519
+    display_name:         str
+    sogs_address:         str
+    sogs_pubkey:          bytes
 
     # Default values
     running:              bool                                                = False
@@ -89,16 +84,19 @@ class Plugin:
     conn:                 oxenmq.ConnectionID | None                          = None
 
     # Post initialised
-    session_id:      SessionID           = dataclasses.field(init=False) # 33 byte session account
-    blind25_pubkey:  bytes               = dataclasses.field(init=False) # 25 blinded x25519 pubkey
-    blind25_privkey: bytes               = dataclasses.field(init=False) # 25 blinded x25519 prvkey
-    blind15_pubkey:  bytes               = dataclasses.field(init=False) # TODO: x
-    blind15_privkey: bytes               = dataclasses.field(init=False) # x
-    x_pubkey:        bytes               = dataclasses.field(init=False)
-    x_privkey:       bytes               = dataclasses.field(init=False)
-    omq:             oxenmq.OxenMQ       = dataclasses.field(init=False)
+    session_id:           SessionID           = dataclasses.field(init=False) # 33 byte 15-blinded x25519 pubkey  (w/  15-prefix)
+    blind25_pubkey:       bytes               = dataclasses.field(init=False) # 32 byte 25-blinded x25519 pubkey  (w/o 25-prefix)
+    blind25_privkey:      bytes               = dataclasses.field(init=False) # 32 byte 25-blinded x25519 privkey (w/o 25-prefix)
+    blind15_pubkey:       bytes               = dataclasses.field(init=False) # 32 byte 15-blinded x25519 pubkey  (w/o 15-prefix)
+    blind15_privkey:      bytes               = dataclasses.field(init=False) # 32 byte 15-blinded x25519 privkey (w/o 15-prefix)
+    x_pubkey:             bytes               = dataclasses.field(init=False) # 32 byte x25519 pubkey (non-blinded Session ID)
+    x_privkey:            bytes               = dataclasses.field(init=False) # 32 byte x25519 pubkey (non-blinded Session ID)
+    omq:                  oxenmq.OxenMQ       = dataclasses.field(init=False)
 
     def __post_init__(self):
+        """Generate the derivative keys based given the Session Account's Ed25519 key-pairing and
+        sets up an OxenMQ connection to the SOGS server"""
+
         if len(self.ed_privkey) != 32 or len(self.ed_pubkey) != 32:
             raise Exception("SOGS plugin must specify a Ed25519 32b public and private keypair (pubkey was: {len(self.pubkey)}b, privkey: {len(self.privkey)}b")
 
@@ -132,6 +130,9 @@ class Plugin:
 
     def _on_registered_after_hello(self):
         conn: oxenmq.ConnectionID = self._require_conn_established()
+
+        # NOTE: Subscribe to the following hooks on SOGS. SOGs will call invoke this plugin via
+        # OxenMQ when the commands are triggered.
         if len(self.pre_slash_handlers) or self.request_read_handler:
             pre_commands: list[str] = list(self.pre_slash_handlers.keys())
             if self.request_read_handler:
@@ -192,20 +193,19 @@ class Plugin:
 
         # if not running, finish_init() will do this once connected
         if self.running:
-            self.omq.send(self.conn, f"plugin.register_pre_commands", oxenc.bt_serialize({"commands": ["request_read"]}))
+            conn: oxenmq.ConnectionID = self._require_conn_established()
+            self.omq.send(conn, f"plugin.register_pre_commands", oxenc.bt_serialize({b"commands": ["request_read"]}))
 
     def handle_message_command(self, m: oxenmq.Message, pre_command: bool):
         req = oxenc.bt_deserialize(m.dataview()[0])
         msg = Post(raw=req[b"message_data"])
 
         command_parts = msg.text.split(' ')
-        if not command_parts:
-            # shouldn't be possible, but false just to signal it happened
+        if not command_parts: # shouldn't be possible, but false just to signal it happened
             return oxenc.bt_serialize(False)
 
-        command = command_parts[0]
+        command           = command_parts[0]
         command_container = self.pre_slash_handlers if pre_command else self.post_slash_handlers
-
         if not command in command_container:
             return oxenc.bt_serialize(True)
 
@@ -241,7 +241,7 @@ class Plugin:
             print(f"Exception in request_read handler: {traceback.format_exc()}")
         return oxenc.bt_serialize(True)
 
-    def register_command(self, command, handler, pre_command: bool):
+    def register_command(self, command: str, handler: typing.Callable[[str, str], None], pre_command: bool):
         """
         Registers a slash command with sogs.  `handler` will be invoked with the arguments
         from sogs as a dictionary, including "command": command.
@@ -258,22 +258,23 @@ class Plugin:
 
         # if not running, finish_init() will do this once connected
         if self.running:
+            assert self.conn, "When running is set, the connection should already be established"
             command_type = "pre_commands" if pre_command else "post_commands"
-            self.omq.send(self.conn, f"plugin.register_{command_type}", oxenc.bt_serialize({"commands": [command]}))
+            self.omq.send(self.conn, f"plugin.register_{command_type}", oxenc.bt_serialize({b"commands": [command]}))
 
-    def register_pre_command(self, command, handler):
+    def register_pre_command(self, command: str, handler: typing.Callable[[str, str], None]):
         self.register_command(command, handler, True)
 
-    def register_post_command(self, command, handler):
+    def register_post_command(self, command: str, handler: typing.Callable[[str, str], None]):
         self.register_command(command, handler, False)
 
     def filter_message(self, m: oxenmq.Message):
-        print(f"filter_message called")
+        log.debug(f"Filter message received: {m}")
         try:
             request = oxenc.bt_deserialize(m.dataview()[0])
-            resp = self.filter(request)
+            resp    = self.filter(request)
             if resp not in self.FILTER_RESPONSES:
-                print(f"plugin.filter() must return one of {Plugin.FILTER_RESPONSES}")
+                log.warning(f"plugin.filter() must return one of {Plugin.FILTER_RESPONSES}")
                 return oxenc.bt_serialize("REJECT")
             print(f"filter_message returning '{resp}' as filter response")
             return oxenc.bt_serialize(resp)
@@ -281,7 +282,7 @@ class Plugin:
             print(f"Exception filtering message: {e}")
             return oxenc.bt_serialize("REJECT")
 
-    def filter(self, request):
+    def filter(self, request):  # pyright: ignore[reportUnusedParameter]
         """
         Users may override this function for custom filtering, or supply a callable filter object
 
@@ -289,21 +290,19 @@ class Plugin:
         """
         return self.FILTER_ACCEPT
 
-    """
-    Call this from your filter() override when you want to reply to a user message,
-    e.g. "hey no swearing here"
-    """
-
     def reply(
         self,
-        room_name,
-        room_token,
+        room_name:       str,
+        room_token:      bytes,
         user_session_id: SessionID,
         message_data,
         username,
         *args,
         reply_settings=None,
     ):
+        """Call this from your filter() override when you want to reply to a user message, e.g.
+        "hey no swearing here"
+        """
         from random import choice
 
         if not reply_settings:
@@ -328,71 +327,95 @@ class Plugin:
 
     def set_user_room_permissions(
         self,
-        *,
-        room_token:      bytes | None    = None,
-        room_id:         int | None      = None,
-        user_session_id: SessionID| None = None,
-        user_id:         int | None      = None,
-        sec_from_now:    int | None      = None,
-        **perms:         bool | None,
-    ):
-        if sec_from_now:
-            if not 0 < sec_from_now < 1_000_000_000:
-                print("future permissions must not be set *that* far in the future or past...")
-                return
-            for k in ('accessible', 'read', 'write', 'upload'):
-                if k in perms and perms[k] is None:
-                    print("Setting permissions to 'None' is invalid for future permission changes.")
-                    return
+        room:         bytes     | int | None = None,
+        user:         SessionID | int | None = None,
+        sec_from_now: int       | None       = None,
+        accessible:   bool      | None       = None,
+        read:         bool      | None       = None,
+        write:        bool      | None       = None,
+        upload:       bool      | None       = None,
+    ) -> SetUserRoomPermissionsResponse:
+        """Set the permission(s) of the user for the room
 
-        if not room_token and not room_id:
-            print("room identifier (token or id) required for permissions changes.")
-            return
-        if not user_session_id and not user_id:
-            print("user identifier (session_id or id) required for permissions changes.")
-            return
+        The following parameters must be set, or otherwise this function returns InvalidArg:
 
-        req = {}
-        if room_token:
-            req['room_token'] = room_token
+          - Room must be set to either the room token in bytes (e.g.: b'foobar') or ID of the room.
+          - User must be set to either the user's 33b blinded Session ID or the ID of the user.
+          - At least one of the permissions must be set, accessible, read, write or upload.
+        """
+        req: dict[bytes, bt_value] = {}
+
+        # NOTE: Set the room
+        if isinstance(room, int):
+            req[b"room_id"] = room
+        elif isinstance(room, bytes):
+            req[b"room_token"] = room
         else:
-            req['room_id'] = room_id
-        if user_session_id:
-            req['user_session_id'] = user_session_id.hex()
+            print("Room identifier (token `bytes` or id `int`) is required for permissions changes.")
+            return SetUserRoomPermissionsResponse.InvalidArg
+
+        # NOTE: Set the user
+        if isinstance(user, SessionID):
+            if len(user) != 33:
+                print("User passed as `SessionID` must be a 33b blinded public key for permissions changes.")
+                return SetUserRoomPermissionsResponse.InvalidArg
+            req[b"user_session_id"] = user.hex()
+        elif isinstance(user, int):
+            req[b"user_id"] = user
         else:
-            req['user_id'] = user_id
+            print("User (`SessionID` or id `int`) is required for permissions changes.")
+            return SetUserRoomPermissionsResponse.InvalidArg
 
-        for key in ('accessible', 'read', 'write', 'upload'):
-            if key in perms:
-                if not isinstance(perms[key], bool) and perms[key] is not None:
-                    print(f"Invalid permission change {key} -> {perms[key]}")
-                    return
-                req[key] = perms[key]
+        # NOTE: Set permissions
+        if not accessible and not read and not write and not upload:
+            print("At least one permission should be specified (`accessible`, `read`, `write`, `upload`) for permissions changes.")
+            return SetUserRoomPermissionsResponse.InvalidArg
+        if accessible:
+            req[b"accessible"] = accessible
+        if read:
+            req[b"read"] = read
+        if write:
+            req[b"write"] = write
+        if upload:
+            req[b"upload"] = upload
 
-        print(f"req: {req}")
+        # NOTE: Set enqueued permission change
         if sec_from_now:
-            req['in'] = sec_from_now
+            UPPER_BOUND: int = 1_000_000_000
+            if not 0 < sec_from_now < UPPER_BOUND:
+                print(f"Enqueuing a permission change in the future must be bounded between [0 < {sec_from_now} < {UPPER_BOUND}]")
+                return SetUserRoomPermissionsResponse.InvalidArg
 
-        return self.omq.request_future(
-            self.conn,
-            "plugin.set_user_room_permissions",
-            oxenc.bt_serialize(req),
-            request_timeout=timedelta(seconds=1),
-        ).get()[0]
+            req[b"in"] = sec_from_now
+
+        # NOTE: Request and response
+        conn:      oxenmq.ConnectionID = self._require_conn_established();
+        future:    oxenmq.ResultFuture = self.omq.request_future(conn, "plugin.set_user_room_permissions", oxenc.bt_serialize(req), request_timeout=timedelta(seconds=1))
+        resp_list: list[bytes]         = future.get()
+        assert len(resp_list) == 1
+
+        resp: bytes = future.get()[0]
+        result = SetUserRoomPermissionsResponse.Error
+        if resp == b"OK":
+            result = SetUserRoomPermissionsResponse.Ok
+        elif resp == b"NoSuchRoom":
+            result = SetUserRoomPermissionsResponse.NoSuchRoom
+        elif resp == b"NoSuchUser":
+            result = SetUserRoomPermissionsResponse.NoSuchUser
+        return result
 
     def delete_messages(self, msg_ids: list[MessageID]) -> bool:
-        conn: oxenmq.ConnectionID = self._require_conn_established()
-        """
-        Tells sogs to delete the specified message(s). The message(s) must have been created by this
-        plugin.
+        """Request SOGs to delete the specified message(s). The message(s) must have been created by
+        this plugin.
         """
         result = True
         if len(msg_ids):
-            resp: dict[bytes, bt_value] = oxenc.bt_deserialize(
-                self.omq.request_future(
-                    conn, "plugin.delete_message", oxenc.bt_serialize({b'msg_ids': msg_ids})
-                ).get()[0]
-            )
+            conn:      oxenmq.ConnectionID = self._require_conn_established();
+            future:    oxenmq.ResultFuture = self.omq.request_future(conn, "plugin.delete_messages", oxenc.bt_serialize(req))
+            resp_list: list[bytes]         = future.get()
+            assert len(resp_list) == 1
+
+            resp: dict[bytes, bt_value] = oxenc.bt_deserialize(resp_list[0])
             if b'status' in resp and resp[b'status'] == b'OK':
                 result = True
         return result
@@ -401,7 +424,13 @@ class Plugin:
         result = self.delete_messages([msg_id])
         return result
 
-    def post_message(self, room_token: bytes, body: str, *, whisper_target: SessionID | None = None, no_plugins: bool = False, attachments_metadata: list[dict[str, typing.Any]] | None = None) -> MessageID | None:
+    def post_message(self,
+                     room_token:           bytes,
+                     body:                 str,
+                     *,
+                     whisper_target:       SessionID | None = None,
+                     no_plugins:           bool = False,
+                     attachments_metadata: list[dict[str, typing.Any]] | None = None) -> MessageID | None:
         from sogs import session_pb2 as protobuf
         from time import time
         self.last_post_time = max(self.last_post_time + 1, int(time() * 1000))
@@ -423,12 +452,31 @@ class Plugin:
                     _ = getattr(attachment, key)                   # Ensure the field is available in the attachment (throws if it isn't)
                     setattr(attachment, key, attachment_meta[key]) # Assign the field
 
+        def pad_message(payload: bytes) -> bytearray:
+            # NOTE: Direct port of
+            # https://github.com/session-foundation/libsession-util/blob/dd5d7c006d95a138f3648e4d76a0754e3950245a/src/session_protocol.cpp#L382
+            PADDING_TERMINATING_BYTE = 0x80
+            SESSION_PROTOCOL_COMMUNITY_OR_1O1_MSG_PADDING = 160
+
+            # Calculate amount of padding required
+            padded_content_size = len(payload) + 1  # +1 for padding byte
+            bytes_for_padding = SESSION_PROTOCOL_COMMUNITY_OR_1O1_MSG_PADDING - (padded_content_size % SESSION_PROTOCOL_COMMUNITY_OR_1O1_MSG_PADDING)
+            padded_content_size += bytes_for_padding
+            assert padded_content_size % SESSION_PROTOCOL_COMMUNITY_OR_1O1_MSG_PADDING == 0
+
+            # Do the padding
+            result = bytearray(padded_content_size)
+            result[0:len(payload)] = payload
+            result[len(payload)] = PADDING_TERMINATING_BYTE
+            return result
+
+
         # NOTE: Content must be padded as per Session Protocol requirements
         content = bytes(pad_message(content.SerializeToString()))
 
         # FIXME: Use 25-blinding when Session is ready and deprecate 15-blinded keys
         from session_util.blinding import blind15_sign
-        sig:    bytes = blind15_sign(self.ed_privkey, self.sogs_pubkey, content)
+        sig:    bytes            = blind15_sign(self.ed_privkey, self.sogs_pubkey, content)
         result: MessageID | None = self.inject_message(room_token, self.session_id, content, sig, whisper_target=whisper_target, no_plugins=no_plugins, attachment_ids=attachment_ids)
         return result
 
@@ -464,6 +512,7 @@ class Plugin:
         if attachment_ids:
             req[b"files"] = attachment_ids
 
+        conn: oxenmq.ConnectionID = self._require_conn_established()
         resp = oxenc.bt_deserialize(
             self.omq.request_future(
                 self.conn, "plugin.message", oxenc.bt_serialize(req), request_timeout=timedelta(seconds=5)
