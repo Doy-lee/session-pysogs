@@ -79,9 +79,3 @@ Restart the SOGS service by running:
 ```bash
 uwsgi uwsgi-sogs.ini
 ```
-
-If a `chdir` is set in `uwsgi-sogs.ini`, the `NotoColorEmoji.ttf` needs be copied to the `chdir` listed in `uwsgi-sogs.ini`:
-
-```bash
-cp sogs/plugins/NotoColorEmoji.ttf [chdir]/NotoColorEmoji.ttf
-```
