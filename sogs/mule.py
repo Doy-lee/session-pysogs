@@ -61,16 +61,6 @@ def needs_app_context(f):
 
     return wrapper
 
-
-@needs_app_context
-def run_captcha():
-    import sogs.plugins as plugins
-    try:
-        app.logger.info("CAPTCHA plugin mule started.")
-        plugins.run_captcha_plugin(db)
-    except Exception:
-        app.logger.error("mule died via exception:\n{}".format(traceback.format_exc()))
-
 def run():
     try:
         app.logger.info("OxenMQ mule started.")

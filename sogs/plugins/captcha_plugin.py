@@ -22,7 +22,6 @@ Architecture:
 import asyncio
 import dataclasses
 import enum
-import logging
 import math
 import os
 import random
@@ -457,7 +456,7 @@ class CaptchaManager:
                 self.captcha_list.append(captcha)
                 tasks.append(captcha.generate_captcha(executor, width=self.width, height=self.height, font=font, color_set=DEFAULT_COLOUR_SET))
             await asyncio.gather(*tasks)
-        print(f"Generated {self.batch_size} CAPTCHAs in {time() - start_time:.4}s")
+        log.debug(f"Generated {self.batch_size} CAPTCHAs in {time() - start_time:.4}s")
 
     def refresh(self) -> Captcha:
         """Get a CAPTCHA from the pool, regenerating if empty."""
@@ -782,3 +781,75 @@ class CaptchaPlugin(Plugin):
                 log.debug(f"Incorrect emoji {reaction} reacted by 0x{session_id.hex()} in room '{room_token}')")
 
             _ = self.tick(room_token=room_token, session_id=session_id, room_name=room_name);
+
+def entry_point(ini: str = "captcha.ini"):
+    import configparser
+    from sogs import config as sogs_config
+
+    # Setup and load config file from disk
+    log.name              = 'CAPTCHA'
+    cp                    = configparser.ConfigParser()
+    files_read: list[str] = cp.read(ini)
+
+    log.info(f"Loading captcha plugin config from {ini}")
+    if len(files_read) != 1:
+        log.warning(f"Captcha .ini config file does not exist, stopping. File was: {ini}")
+        return
+
+    # Mandatory configs fields
+    sogs_pubkey_hex: str | None = cp.get('sogs', 'sogs_pubkey_hex', fallback=None)
+    if not sogs_pubkey_hex:
+        log.error(f"Captcha config file field 'sogs_pubkey_hex' is missing. File was: {ini}")
+        return
+
+    if sogs_pubkey_hex.startswith("0x"):
+        sogs_pubkey_hex = sogs_pubkey_hex[2:]
+
+    sogs_pubkey: bytes = b''
+    try:
+        sogs_pubkey = bytes.fromhex(sogs_pubkey_hex)
+    except Exception as e:
+        log.error(f"Captcha config file field 'sogs_pubkey_hex' was not a hex string: {sogs_pubkey_hex}")
+        return
+
+    # Overridable config fields
+    key_file:          str        = cp.get   ('plugin', 'key_file',          fallback="x25519")
+    display_name:      str        = cp.get   ('plugin', 'display_name',      fallback="CAPTCHA")
+    limit:             int | None = cp.getint('plugin', 'limit',             fallback=None)
+    write_timeout_s:   int | None = cp.getint('plugin', 'write_timeout',     fallback=None)
+    refresh_timeout_s: int | None = cp.getint('plugin', 'refresh_timeout_s', fallback=None)
+    retry_timeout_s:   int | None = cp.getint('plugin', 'retry_timeout_s',   fallback=None)
+    sogs_address:      str        = cp.get   ('sogs',   'sogs_address',      fallback=sogs_config.OMQ_LISTEN)
+    ed_privkey:        bytes      = Plugin.get_or_make_ed25519_privkey(key_file)
+
+    import traceback
+    try:
+        # Instantiate the plugin and configure extra fields in the plugin
+        plugin                   = CaptchaPlugin(sogs_address=sogs_address, sogs_pubkey=sogs_pubkey, ed_privkey=ed_privkey, display_name=display_name)
+        plugin.captcha_limit     = limit             if limit             else plugin.captcha_limit
+        plugin.retry_timeout_s   = retry_timeout_s   if retry_timeout_s   else plugin.retry_timeout_s
+        plugin.refresh_timeout_s = refresh_timeout_s if refresh_timeout_s else plugin.refresh_timeout_s
+        plugin.write_timeout_s   = write_timeout_s   if write_timeout_s   else plugin.write_timeout_s
+
+        # Register the plugin to the DB. SOGs uses this DB to authenticate incoming requests as long
+        # as they are signed by the x25519 key stored here. This table also contains permissions for
+        # the SOGs to further discriminate the types of requests the plugin is allowed to make.
+        #
+        # This step is optional! If you wanted to run plugins on a separate network and to remotely
+        # communicate with SOGs then you could imagine manually authorising the plugin by inserting
+        # the key into the DB out-of-band.
+        #
+        # In this example we are running the CAPTCHA plugin on a DB that is local to the application
+        # and is trusted so we authorise ourselves directly into the plugins table thus making this
+        # plugin completely standalone.
+        from sogs.web import app
+        with app.app_context():
+            import sogs.db
+            with sogs.db.transaction():
+                sogs.db.query("INSERT OR IGNORE INTO plugins (auth_key, global, approver, subscribe) VALUES (:key, 1, 1, 1)", key=SigningKey(plugin.x_pubkey).encode())
+
+        plugin.run()
+    except Exception:
+        log.error("Exception raised in plugin. Terminating:\n{}".format(traceback.format_exc()))
+        raise
+

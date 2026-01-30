@@ -133,7 +133,6 @@ class Plugin:
 
     # User initialised
     ed_privkey:           bytes # ed25519
-    ed_pubkey:            bytes # ed25519
     display_name:         str
     sogs_address:         str
     sogs_pubkey:          bytes
@@ -147,6 +146,7 @@ class Plugin:
     conn:                 oxenmq.ConnectionID | None                          = None
 
     # Post initialised
+    ed_pubkey:            bytes               = dataclasses.field(init=False) # 32 byte ed25519 public key
     session_id:           SessionID           = dataclasses.field(init=False) # 33 byte 15-blinded x25519 pubkey  (w/  15-prefix)
     blind25_pubkey:       bytes               = dataclasses.field(init=False) # 32 byte 25-blinded x25519 pubkey  (w/o 25-prefix)
     blind25_privkey:      bytes               = dataclasses.field(init=False) # 32 byte 25-blinded x25519 privkey (w/o 25-prefix)
@@ -156,15 +156,32 @@ class Plugin:
     x_privkey:            bytes               = dataclasses.field(init=False) # 32 byte x25519 pubkey (non-blinded Session ID)
     omq:                  oxenmq.OxenMQ       = dataclasses.field(init=False)
 
+    @staticmethod
+    def get_or_make_ed25519_privkey(key_file: str) -> bytes:
+        import pathlib
+        result: bytes = b''
+        dest_path     = pathlib.Path(key_file)
+        try:
+            result = dest_path.read_bytes()
+            if len(result) == sodium.crypto_sign_SEEDBYTES:
+                (_, result) = sodium.crypto_sign_seed_keypair(result)
+        except FileNotFoundError:
+            (_, result) = sodium.crypto_sign_keypair()
+            bytes_written = dest_path.write_bytes(result)
+            assert bytes_written == sodium.crypto_sign_SECRETKEYBYTES, f"Failed to write plugin key to {key_file}, aborting"
+        assert len(result) == sodium.crypto_sign_SECRETKEYBYTES
+        return result
+
     def __post_init__(self):
         """Generate the derivative keys based given the Session Account's Ed25519 key-pairing and
         sets up an OxenMQ connection to the SOGS server"""
 
-        if len(self.ed_privkey) != 32 or len(self.ed_pubkey) != 32:
-            raise Exception("SOGS plugin must specify a Ed25519 32b public and private keypair (pubkey was: {len(self.pubkey)}b, privkey: {len(self.privkey)}b")
+        if len(self.ed_privkey) != 64:
+            raise Exception("SOGS plugin must specify a Ed25519 64b private keypair (privkey: {len(self.privkey)}b")
 
-        # Generate X25519 keys
-        self.x_privkey                                 = sodium.crypto_sign_ed25519_sk_to_curve25519(self.ed_privkey + self.ed_pubkey)
+        # Generate Ed25519 public key and X25519 keys
+        self.ed_pubkey                                 = sodium.crypto_sign_ed25519_sk_to_pk(self.ed_privkey)
+        self.x_privkey                                 = sodium.crypto_sign_ed25519_sk_to_curve25519(self.ed_privkey)
         self.x_pubkey                                  = sodium.crypto_sign_ed25519_pk_to_curve25519(self.ed_pubkey)
 
         # Generate blinded keys
