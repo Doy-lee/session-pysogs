@@ -405,7 +405,6 @@ class Plugin:
         accessible:   bool      | None       = None,
         read:         bool      | None       = None,
         write:        bool      | None       = None,
-        upload:       bool      | None       = None,
     ) -> SetUserRoomPermissionsResponse:
         """Set the permission(s) of the user for the room
 
@@ -413,7 +412,7 @@ class Plugin:
 
           - Room must be set to either the room token in bytes (e.g.: b'foobar') or ID of the room.
           - User must be set to either the user's 33b blinded Session ID or the ID of the user.
-          - At least one of the permissions must be set, accessible, read, write or upload.
+          - At least one of the permissions must be set, accessible, read, or write.
         """
         req: dict[bytes, bt_value] = {}
 
@@ -439,8 +438,8 @@ class Plugin:
             return SetUserRoomPermissionsResponse.InvalidArg
 
         # NOTE: Set permissions
-        if not accessible and not read and not write and not upload:
-            print("At least one permission should be specified (`accessible`, `read`, `write`, `upload`) for permissions changes.")
+        if not accessible and not read and not write:
+            print("At least one permission should be specified (`accessible`, `read`, `write`) for permissions changes.")
             return SetUserRoomPermissionsResponse.InvalidArg
         if accessible:
             req[b"accessible"] = accessible
@@ -448,8 +447,6 @@ class Plugin:
             req[b"read"] = read
         if write:
             req[b"write"] = write
-        if upload:
-            req[b"upload"] = upload
 
         # NOTE: Set enqueued permission change
         if sec_from_now:
@@ -461,13 +458,12 @@ class Plugin:
             req[b"in"] = sec_from_now
 
         # NOTE: Request and response
-        conn:      oxenmq.ConnectionID = self._require_conn_established();
-        future:    oxenmq.ResultFuture = self.omq.request_future(conn, "plugin.set_user_room_permissions", oxenc.bt_serialize(req), request_timeout=timedelta(seconds=1))
+        result                     = SetUserRoomPermissionsResponse.Error
+        conn:  oxenmq.ConnectionID = self._require_conn_established();
+        future:    oxenmq.ResultFuture = self.omq.request_future(conn, "plugin.set_user_room_permissions", oxenc.bt_serialize(req), request_timeout=timedelta(seconds=5))
         resp_list: list[bytes]         = future.get()
+        resp:      bytes               = resp_list[0]
         assert len(resp_list) == 1
-
-        resp: bytes = future.get()[0]
-        result = SetUserRoomPermissionsResponse.Error
         if resp == b"OK":
             result = SetUserRoomPermissionsResponse.Ok
         elif resp == b"NoSuchRoom":
@@ -483,7 +479,7 @@ class Plugin:
         result = True
         if len(msg_ids):
             conn:      oxenmq.ConnectionID = self._require_conn_established();
-            future:    oxenmq.ResultFuture = self.omq.request_future(conn, "plugin.delete_messages", oxenc.bt_serialize(req))
+            future:    oxenmq.ResultFuture = self.omq.request_future(conn, "plugin.delete_message", oxenc.bt_serialize({b'msg_ids': msg_ids}))
             resp_list: list[bytes]         = future.get()
             assert len(resp_list) == 1
 
@@ -1027,10 +1023,10 @@ class PermissionPlugin(Plugin):
             if reaction == self.yes_reaction:
                 print(f"Granting read permissions to {session_id} for room with token {room_token}")
                 self.set_user_room_permissions(
-                    room_token=room_token, user_session_id=session_id, sec_from_now=None, read=True
+                    room=room_token, user=session_id, sec_from_now=None, read=True
                 )
                 self.set_user_room_permissions(
-                    room_token=room_token, user_session_id=session_id, sec_from_now=120, write=True
+                    room=room_token, user=session_id, sec_from_now=120, write=True
                 )
                 self.post_message(
                     room_token,
