@@ -567,7 +567,7 @@ class UserCaptchaState:
         self.posted_captcha_timestamp             = 0
 
 @dataclasses.dataclass
-class CaptchaPlugin(Plugin):
+class EmojiCaptchaPlugin(Plugin):
     """SOGS Plugin implementing emoji CAPTCHA verification for room access"""
     attempt_limit_str: typing.ClassVar[str]                               = "You have hit the attempt limit, solve the CAPTCHA to proceed."
     refresh_emoji:     str                                                = "\U0001F504" # Unicode refresh symbol emoji
@@ -705,7 +705,7 @@ class CaptchaPlugin(Plugin):
                     user.refresh_msg_id = None
 
                 if user.captcha_attempts >= (self.captcha_limit - 1):
-                    user.refresh_msg_id = self.post_message(room_token, CaptchaPlugin.attempt_limit_str, whisper_target=session_id, no_plugins=True)
+                    user.refresh_msg_id = self.post_message(room_token, EmojiCaptchaPlugin.attempt_limit_str, whisper_target=session_id, no_plugins=True)
                     if user.refresh_msg_id:
                         user.refresh_state = RefreshState.Nil
                 else:
@@ -789,7 +789,7 @@ class CaptchaPlugin(Plugin):
             body += (f"You can refresh the CAPTCHA every {self.refresh_timeout_s} seconds by reacting with {self.refresh_emoji}. "
                      f"You have {captchas_remaining} attempt{'s' if captchas_remaining > 1 else ''} remaining.")
         else:
-            body += CaptchaPlugin.attempt_limit_str
+            body += EmojiCaptchaPlugin.attempt_limit_str
 
         msg_id: MessageID | None = self.post_message(room_token=room_token, body=body, whisper_target=session_id, no_plugins=True, attachments_metadata=[captcha_attachment_metadata])
         if not msg_id:
@@ -897,7 +897,7 @@ def entry_point(ini_path: str = 'emoji_captcha.ini'):
 
     try:
         # Instantiate the plugin and configure extra fields in the plugin
-        plugin                   = CaptchaPlugin(sogs_address=sogs_address, sogs_pubkey=sogs_pubkey, ed_privkey=ed_privkey, display_name=display_name)
+        plugin                   = EmojiCaptchaPlugin(sogs_address=sogs_address, sogs_pubkey=sogs_pubkey, ed_privkey=ed_privkey, display_name=display_name)
         plugin.captcha_limit     = limit             if limit             else plugin.captcha_limit
         plugin.retry_timeout_s   = retry_timeout_s   if retry_timeout_s   else plugin.retry_timeout_s
         plugin.refresh_timeout_s = refresh_timeout_s if refresh_timeout_s else plugin.refresh_timeout_s
