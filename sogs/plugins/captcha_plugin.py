@@ -474,7 +474,7 @@ class RefreshState(enum.Enum):
 class CaptchaState(enum.Enum):
     """State machine for CAPTCHA challenge lifecycle."""
     Nil     = 0  # Initial state / reset
-    Request = 1  # Incorrect answer received, need to show error
+    Answer  = 1  # Incorrect answer received, need to show error
     Wait    = 2  # Waiting for retry timeout after failure
     Ready   = 3  # Ready to present new CAPTCHA
     Solved  = 4  # Correctly answered, grant access
@@ -597,18 +597,22 @@ class CaptchaPlugin(Plugin):
             if user.captcha_state == CaptchaState.Ready or user.captcha_attempts >= self.captcha_limit:
               user.captcha_state = CaptchaState.Nil
 
-            if user.captcha_state == CaptchaState.Request:
+            if user.captcha_state == CaptchaState.Answer:
                 attempts_remaining: int = self.captcha_limit - (user.captcha_attempts + 1)
-                remaining               = f"{attempts_remaining} attempt" + ("s" if attempts_remaining > 1 else "")
-                body                    = f"Incorrect emoji, a new CAPTCHA will be available in {self.retry_timeout_s} seconds. {remaining} remaining."
-                msg_id                  = self.post_message(room_token, body, whisper_target=session_id, no_plugins=True)
-                if msg_id:
-                    user.captcha_failed_next_attempt_at_ts = now + self.retry_timeout_s
+                if attempts_remaining > 0:
+                    remaining               = f"{attempts_remaining} attempt" + ("s" if attempts_remaining > 1 else "")
+                    body                    = f"Incorrect emoji, a new CAPTCHA will be available in {self.retry_timeout_s} seconds. {remaining} remaining."
+                    msg_id                  = self.post_message(room_token, body, whisper_target=session_id, no_plugins=True)
+                    if msg_id:
+                        user.captcha_failed_next_attempt_at_ts = now + self.retry_timeout_s
+                        user.captcha_state                     = CaptchaState.Wait
+                        user.msgs_to_delete_on_ready.append(msg_id)
+                        if user.posted_captcha_msg_id: # Delete the failed CAPTCHA
+                            user.msgs_to_delete_on_tick.append(user.posted_captcha_msg_id)
+                            user.posted_captcha_msg_id = None
+                else:
                     user.captcha_state                     = CaptchaState.Wait
-                    user.msgs_to_delete_on_ready.append(msg_id)
-                    if user.posted_captcha_msg_id: # Delete the failed CAPTCHA
-                        user.msgs_to_delete_on_tick.append(user.posted_captcha_msg_id)
-                        user.posted_captcha_msg_id = None
+                    user.captcha_failed_next_attempt_at_ts = now
 
             if user.captcha_state == CaptchaState.Wait:
                 if now >= user.captcha_failed_next_attempt_at_ts:
@@ -777,7 +781,7 @@ class CaptchaPlugin(Plugin):
                 user.refresh_state = RefreshState.Request
                 log.debug(f"Refresh reacted by 0x{session_id.hex()} in room '{room_token}'")
             else:
-                user.captcha_state = CaptchaState.Request
+                user.captcha_state = CaptchaState.Answer
                 log.debug(f"Incorrect emoji {reaction} reacted by 0x{session_id.hex()} in room '{room_token}')")
 
             _ = self.tick(room_token=room_token, session_id=session_id, room_name=room_name);
