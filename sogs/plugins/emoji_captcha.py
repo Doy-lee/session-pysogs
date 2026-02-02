@@ -524,11 +524,11 @@ class RefreshState(enum.Enum):
 
 class CaptchaState(enum.Enum):
     """State machine for CAPTCHA challenge lifecycle."""
-    Nil     = 0  # Initial state / reset
-    Answer  = 1  # Incorrect answer received, need to show error
-    Wait    = 2  # Waiting for retry timeout after failure
-    Ready   = 3  # Ready to present new CAPTCHA
-    Solved  = 4  # Correctly answered, grant access
+    Nil             = 0  # Initial state / reset
+    IncorrectAnswer = 1  # Incorrect answer received, need to show error
+    Wait            = 2  # Waiting for retry timeout after failure
+    Ready           = 3  # Ready to present new CAPTCHA
+    Solved          = 4  # Correctly answered, grant access
 
 @dataclasses.dataclass
 class UserCaptchaState:
@@ -648,7 +648,10 @@ class CaptchaPlugin(Plugin):
             if user.captcha_state == CaptchaState.Ready or user.captcha_attempts >= self.captcha_limit:
               user.captcha_state = CaptchaState.Nil
 
-            if user.captcha_state == CaptchaState.Answer:
+            # Handle an incorrect answer, if they still have attempts remaining we post the failure
+            # message and then make the user wait. If they don't have attempts left this is bypassed
+            # and the state-machine no-ops.
+            if user.captcha_state == CaptchaState.IncorrectAnswer:
                 attempts_remaining: int = self.captcha_limit - (user.captcha_attempts + 1)
                 if attempts_remaining > 0:
                     remaining               = f"{attempts_remaining} attempt" + ("s" if attempts_remaining > 1 else "")
@@ -832,7 +835,7 @@ class CaptchaPlugin(Plugin):
                 user.refresh_state = RefreshState.Request
                 log.debug(f"Refresh reacted by 0x{session_id.hex()} in room '{room_token}'")
             else:
-                user.captcha_state = CaptchaState.Answer
+                user.captcha_state = CaptchaState.IncorrectAnswer
                 log.debug(f"Incorrect emoji {reaction} reacted by 0x{session_id.hex()} in room '{room_token}')")
 
             _ = self.tick(room_token=room_token, session_id=session_id, room_name=room_name);
