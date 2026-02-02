@@ -1,36 +1,26 @@
+import dataclasses
+import typing
 import oxenc
 import oxenmq
 from time import time
-from sogs.plugin import Plugin
+from sogs.plugin import Plugin, bt_value, RoomReadRequest, SessionID, RoomToken, MessageID
 
+@dataclasses.dataclass
 class PermissionPlugin(Plugin):
-    def __init__(
-        self,
-        sogs_address,
-        sogs_pubkey,
-        privkey,
-        pubkey,
-        display_name,
-        *args,
-        yes_reaction="\N{THUMBS UP SIGN}",
-        no_reaction="\N{THUMBS DOWN SIGN}",
-        retry_timeout=120,
-        write_timeout=120,
-    ):
+    yes_reaction:     str                                         = "\N{THUMBS UP SIGN}"
+    no_reaction:      str                                         = "\N{THUMBS DOWN SIGN}"
+    retry_timeout:    int                                         = 120
+    write_timeout:    int                                         = 120
+    pending_requests: dict[SessionID, dict[RoomToken, MessageID]] = dataclasses.field(default_factory=dict)
+    retry_jail:       dict[SessionID, float]                      = dataclasses.field(default_factory=dict)
 
-        self.yes_reaction = yes_reaction
-        self.no_reaction = no_reaction
-        self.pending_requests = {}  # map {session_id : {room_token : msg_id } }
-        self.retry_jail = {}
-        self.retry_timeout = retry_timeout
-        self.write_timeout = write_timeout
-
-        Plugin.__init__(self, sogs_address, sogs_pubkey, privkey, pubkey, display_name)
+    def __post_init__(self):
+        super().__post_init__()
         self.register_request_read_handler(self.handle_request_read)
 
-    def handle_request_read(self, req):
-        room_token = req[b'room_token']
-        session_id = req[b'session_id']
+    def handle_request_read(self, req: RoomReadRequest) -> bt_value:
+        room_token: RoomToken = req.room_token
+        session_id: SessionID = req.session_id
         if session_id in self.retry_jail:
             if time() > self.retry_jail[session_id]:
                 del self.retry_jail[session_id]
@@ -39,15 +29,15 @@ class PermissionPlugin(Plugin):
 
         if session_id in self.pending_requests and room_token in self.pending_requests[session_id]:
             return oxenc.bt_serialize("OK")
-        print(f"request_read from {session_id}, id={req[b'user_id']}, room={room_token}")
-        msg_id = self.post_message(
+        print(f"request_read from {session_id.hex()}, id={req.user_id}, room={room_token}")
+        msg_id: MessageID | None = self.post_message(
             room_token,
             "Please react with a thumbs up to agree to the room rules.",
             whisper_target=session_id,
             no_plugins=True,
         )
         if msg_id:
-            react_resp = self.post_reactions(
+            react_resp: dict[bytes, bt_value] = self.post_reactions(
                 room_token, msg_id, self.yes_reaction, self.no_reaction
             )
             if b'error' in react_resp:
@@ -59,21 +49,22 @@ class PermissionPlugin(Plugin):
 
         return oxenc.bt_serialize("OK")
 
+    @typing.override
     def reaction_posted(self, m: oxenmq.Message):
-        req = oxenc.bt_deserialize(m.dataview()[0])
+        req: dict[bytes, bt_value] = oxenc.bt_deserialize(m.dataview()[0])
         print(f"reaction_posted, req = {req}")
-        msg_id = req[b'msg_id']
-        session_id = req[b'session_id']
-        room_token = req[b'room_token']
+        msg_id: MessageID = typing.cast(int, req[b'msg_id'])
+        session_id: SessionID = bytes.fromhex(typing.cast(bytes, req[b'session_id']).decode('utf-8'))
+        room_token: RoomToken = typing.cast(bytes, req[b'room_token'])
         if (
             session_id in self.pending_requests
             and room_token in self.pending_requests[session_id]
             and msg_id == self.pending_requests[session_id][room_token]
         ):
             print(f"reaction_posted, correct session_id, room, and msg_id")
-            reaction = req[b'reaction'].decode('utf-8')
+            reaction: str = typing.cast(bytes, req[b'reaction']).decode('utf-8')
             if reaction == self.yes_reaction:
-                print(f"Granting read permissions to {session_id} for room with token {room_token}")
+                print(f"Granting read permissions to {session_id.hex()} for room with token {room_token}")
                 self.set_user_room_permissions(
                     room=room_token, user=session_id, sec_from_now=None, read=True
                 )

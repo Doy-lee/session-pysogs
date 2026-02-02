@@ -135,12 +135,12 @@ class Plugin:
     sogs_pubkey:          bytes
 
     # Default values
-    running:              bool                                                = False
-    last_post_time:       int                                                 = 0
-    pre_slash_handlers:   dict[str, typing.Callable[[str, str], None]]        = dataclasses.field(default_factory=dict)
-    post_slash_handlers:  dict[str, typing.Callable[[str, str], None]]        = dataclasses.field(default_factory=dict)
-    request_read_handler: typing.Callable[[RoomReadRequest], bt_value] | None = None
-    conn:                 oxenmq.ConnectionID | None                          = None
+    running:              bool                                                                 = False
+    last_post_time:       int                                                                  = 0
+    pre_slash_handlers:   dict[str, typing.Callable[[dict[bytes, bt_value], list[str]], bool]] = dataclasses.field(default_factory=dict)
+    post_slash_handlers:  dict[str, typing.Callable[[dict[bytes, bt_value], list[str]], bool]] = dataclasses.field(default_factory=dict)
+    request_read_handler: typing.Callable[[RoomReadRequest], bt_value] | None                  = None
+    conn:                 oxenmq.ConnectionID | None                                           = None
 
     # Post initialised
     ed_pubkey:            bytes               = dataclasses.field(init=False) # 32 byte ed25519 public key
@@ -318,7 +318,7 @@ class Plugin:
             print(f"Exception in request_read handler: {traceback.format_exc()}")
         return oxenc.bt_serialize(True)
 
-    def register_command(self, command: str, handler: typing.Callable[[str, str], None], pre_command: bool):
+    def register_command(self, command: str, handler: typing.Callable[[dict[bytes, bt_value], list[str]], bool], pre_command: bool):
         """
         Registers a slash command with sogs.  `handler` will be invoked with the arguments
         from sogs as a dictionary, including "command": command.
@@ -339,10 +339,24 @@ class Plugin:
             command_type = "pre_commands" if pre_command else "post_commands"
             self.omq.send(self.conn, f"plugin.register_{command_type}", oxenc.bt_serialize({b"commands": [command]}))
 
-    def register_pre_command(self, command: str, handler: typing.Callable[[str, str], None]):
+    def register_pre_command(self, command: str, handler: typing.Callable[[dict[bytes, bt_value], list[str]], bool]):
+        """
+        Register a handler for slash commands that runs BEFORE the message is inserted.
+
+        Handler receives (request_data, command_parts) and must return a bool. Return False to
+        reject the message and prevent database insertion. Use for validation, rate limiting, or
+        commands that shouldn't be stored.
+        """
         self.register_command(command, handler, True)
 
-    def register_post_command(self, command: str, handler: typing.Callable[[str, str], None]):
+    def register_post_command(self, command: str, handler: typing.Callable[[dict[bytes, bt_value], list[str]], bool]):
+        """
+        Register a handler for slash commands that runs AFTER the message is inserted.
+
+        Handler receives (request_data, command_parts). Return value is ignored since the message is
+        already stored. Use for side effects like replies, reactions, logging, or triggering
+        follow-up actions.
+        """
         self.register_command(command, handler, False)
 
     def filter_message(self, m: oxenmq.Message):

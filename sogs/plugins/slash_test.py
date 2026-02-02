@@ -1,33 +1,35 @@
-from sogs.plugin import Plugin
+import dataclasses
+import typing
 
+from sogs.plugin import Plugin, bt_value
 
+@dataclasses.dataclass
 class SlashTestPlugin(Plugin):
 
-    def __init__(self, sogs_address, sogs_pubkey, privkey, pubkey, display_name):
-
-        Plugin.__init__(self, sogs_address, sogs_pubkey, privkey, pubkey, display_name)
+    def __post_init__(self):
+        super().__post_init__()
         self.register_pre_command('/test', self.handle_pre_slash)
         self.register_post_command('/test', self.handle_post_slash)
         self.register_pre_command('/test_handled', self.handle_pre_slash)
         self.register_post_command('/test_handled', self.handle_post_slash)
         self.register_pre_command('/get_file', self.handle_get_file)
 
-    def handle_pre_slash(self, request, command_parts):
-        print(f"slash pre-insertion command: {command_parts}")
+    def handle_pre_slash(self, request: dict[bytes, bt_value], command_parts: list[str]) -> bool:
+        print(f"slash pre-insertion command: {json.dumps(request, indent=1)} {command_parts}")
         if command_parts[0] == '/test_handled':
             return False
         return True
 
-    def handle_post_slash(self, request, command_parts):
-        print(f"slash post-insertion command: {command_parts}")
+    def handle_post_slash(self, request: dict[bytes, bt_value], command_parts: list[str]) -> bool:
+        print(f"slash post-insertion command: {json.dumps(request, indent=1)} {command_parts}")
         if command_parts[0] == '/test_handled':
             return False
         return True
 
-    def handle_get_file(self, request, command_parts):
+    def handle_get_file(self, request: dict[bytes, bt_value], command_parts: list[str]) -> bool:
         print(f"/get_file pre-insertion command: {command_parts}")
 
-        room_token = request[b'room_token']
+        room_token = typing.cast(bytes, request[b'room_token'])
         print(f"room_token for file upload: {room_token}")
 
         file_meta = self.upload_file("test.jpg", room_token)
