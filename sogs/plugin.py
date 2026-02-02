@@ -7,6 +7,7 @@ import logging
 import enum
 import typing_extensions
 import datetime
+import configparser
 
 from typing          import Callable
 from datetime        import timedelta
@@ -122,6 +123,13 @@ class SetUserRoomPermissionsResponse(enum.Enum):
     Ok         = 4
 
 @dataclasses.dataclass
+class PluginConfigFromINI:
+    ini:          configparser.ConfigParser = dataclasses.field(default_factory=lambda: configparser.ConfigParser(strict=False))
+    success:      bool                      = False
+    sogs_address: str                       = ''
+    sogs_pubkey:  bytes                     = b''
+
+@dataclasses.dataclass
 class Plugin:
     FILTER_ACCEPT:        typing.ClassVar[str]                  = "OK"
     FILTER_REJECT:        typing.ClassVar[str]                  = "REJECT"
@@ -152,6 +160,39 @@ class Plugin:
     x_pubkey:             bytes               = dataclasses.field(init=False) # 32 byte x25519 pubkey (non-blinded Session ID)
     x_privkey:            bytes               = dataclasses.field(init=False) # 32 byte x25519 pubkey (non-blinded Session ID)
     omq:                  oxenmq.OxenMQ       = dataclasses.field(init=False)
+
+    @staticmethod
+    def load_ini_from_path(ini_path: str) -> PluginConfigFromINI:
+        from sogs import config as sogs_config
+
+        # Setup and load config file from disk
+        parsed_ini            = configparser.ConfigParser(strict=False)
+        files_read: list[str] = parsed_ini.read(ini_path)
+
+        if len(files_read) != 1:
+            log.warning(f"Plugin .ini config file does not exist, terminating plugin. File was: {ini_path}")
+            return PluginConfigFromINI()
+
+        # Load fields common to all plugins
+        sogs_address:    str        = parsed_ini.get('plugin', 'sogs_address',    fallback=sogs_config.OMQ_LISTEN)
+        sogs_pubkey_hex: str | None = parsed_ini.get('plugin', 'sogs_pubkey_hex', fallback=None)
+
+        # Convert pubkey to bytes
+        if not sogs_pubkey_hex:
+            log.error(f"INI config file field 'sogs_pubkey_hex' is missing. File was: {ini_path}")
+            return PluginConfigFromINI()
+
+        if sogs_pubkey_hex.startswith("0x"):
+            sogs_pubkey_hex = sogs_pubkey_hex[2:]
+
+        try:
+            sogs_pubkey: bytes = bytes.fromhex(sogs_pubkey_hex)
+        except Exception:
+            log.error(f"Config file field 'sogs_pubkey_hex' was not a valid hex string: {sogs_pubkey_hex}")
+            return PluginConfigFromINI()
+
+        result = PluginConfigFromINI(ini=parsed_ini, success=True, sogs_address=sogs_address, sogs_pubkey=sogs_pubkey)
+        return result
 
     @staticmethod
     def get_or_make_ed25519_privkey(key_file: str) -> bytes:

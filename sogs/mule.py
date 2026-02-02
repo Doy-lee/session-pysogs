@@ -5,6 +5,8 @@ import time
 from datetime import timedelta
 import functools
 from nacl.encoding import HexEncoder
+import typing
+import collections.abc
 
 from .web import app
 from . import cleanup
@@ -97,43 +99,63 @@ def inproc_fail(connid, reason):
 
 @needs_app_context
 @log_exceptions
-def get_relevant_plugins(where_clause, *args, room_id=None, room_token=None):
-    plugin_ids = {}
+def get_relevant_plugins(where_clause: str, room_id: int | None = None, room_token: str | None = None) -> dict[int, bool] | None:
+    """
+    Retrieve plugins that match the given filter criteria from both global and room-specific contexts.
+
+    This function queries the `plugins` table for globally-enabled plugins and the `room_plugins`
+    table for room-specific plugin configurations. It returns a mapping of plugin IDs to whether
+    each plugin is marked as required.
+
+    See `sogs/schema.sqlite` for more information on the table schema.
+
+    Args:
+        where_clause: SQL WHERE condition to filter plugins (e.g., "approver = 1" or "subscribe = 1").
+                      This is appended to queries against both tables.
+        room_id: Optional room ID to look up room-specific plugin configurations. If provided,
+                 room_token is ignored.
+        room_token: Optional room token to resolve to a room_id. Only used if room_id is None.
+
+    Returns:
+        A dictionary mapping plugin IDs (int) to required status (bool), or None if the room
+        lookup fails. The required status is True if the plugin is marked as required in either
+        the global or room-specific context (logical OR of both settings).
+    """
+    result: dict[int, bool] = {}
     with db.transaction():
+        # Query global plugins that match the where_clause
         query_str = "SELECT id, required FROM plugins WHERE global = 1 AND " + where_clause
-        rows = query(query_str)
+        rows      = query(query_str)
         for row in rows:
             required = False
             if row['required'] and row['required'] == 1:
                 required = True
-            plugin_ids[row['id']] = required
+            result[row['id']] = required
 
+        # Resolve room_token to room_id if needed
         if room_token and not room_id:
             id_row = query("SELECT id FROM rooms WHERE token = :token", token=room_token).first()
             if id_row is None:
-                app.logger.warning(
-                    f"filtering message for inexistent room with token: \"{room_token}\"??"
-                )
-                m.reply(bt_serialize("The room destination for the message does not exist."))
+                app.logger.warning(f"filtering message for inexistent room with token: \"{room_token}\"??")
                 return None
             room_id = id_row['id']
 
+        # Query room-specific plugins and merge with global results
         query_str = "SELECT plugin, required FROM room_plugins WHERE room = :room_id AND " + where_clause
         rows = query(query_str, room_id=room_id)
         for row in rows:
             required = False
             if row['required'] and row['required'] == 1:
                 required = True
-            if row['id'] in plugin_ids:
-                required = required or plugin_ids[row['id']]
-            plugin_ids[row['id']] = required
 
-    return plugin_ids
-
+            # Plugin ID is in 'plugin' column for room_plugins table
+            plugin_id = row['plugin']
+            if plugin_id in result:
+                required = required or result[plugin_id]
+            result[plugin_id] = required
+    return result
 
 # Commands from SOGS/uwsgi
-
-
 @needs_app_context
 @log_exceptions
 def message_request(m: oxenmq.Message):
