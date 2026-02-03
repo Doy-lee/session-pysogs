@@ -40,6 +40,11 @@ RoomToken:  typing.TypeAlias = bytes
 TimestampS: typing.TypeAlias = float
 MessageID:  typing.TypeAlias = int
 
+class FilterResponse(enum.StrEnum):
+    Accept = "OK"
+    Reject = "REJECT"
+    Silent = "SILENT"
+
 @dataclasses.dataclass
 class ReplySettings:
     """Settings controlling how the plugin replies to a filtered message.
@@ -76,7 +81,7 @@ class RoomReadRequest:
 
 @dataclasses.dataclass
 class FilterMessageRequest:
-    alt_id:       SessionID # 15-blinded x25519 pubkey (w/ 15-prefix)
+    alt_id:       SessionID  # 15-blinded x25519 pubkey as raw 33 bytes
     data_size:    int
     filtered:     bool
     is_mod:       bool
@@ -84,7 +89,7 @@ class FilterMessageRequest:
     room_id:      int
     room_name:    str
     room_token:   bytes
-    session_id:   SessionID # 25-blinded x25519 pubkey (w/ 25-prefix)
+    session_id:   SessionID  # 25-blinded x25519 pubkey as raw 33 bytes
     sig:          bytes
     user_id:      int
     whisper_mods: bool
@@ -105,6 +110,19 @@ class FilterMessageRequest:
                                       whisper_mods = typing.cast(bool,  src[b'whisper_mods']))
         return result
 
+    def to_bencode(self) -> dict[bytes, bt_value]:
+        return {b'alt_id':        self.alt_id,
+                b'data_size':     self.data_size,
+                b'filtered':      int(self.filtered),
+                b'is_mod':        int(self.is_mod),
+                b'message_data':  self.message_data,
+                b'room_id':       self.room_id,
+                b'room_name':     self.room_name.encode('utf-8'),
+                b'room_token':    self.room_token,
+                b'session_id':    self.session_id.hex().encode('utf-8'),
+                b'sig':           self.sig.hex().encode('utf-8'),
+                b'user_id':       self.user_id,
+                b'whisper_mods':  int(self.whisper_mods)}
 
 class SetUserRoomPermissionsResponse(enum.Enum):
     NoSuchRoom = 0
@@ -181,11 +199,6 @@ class PluginConfigFromINI:
 
 @dataclasses.dataclass
 class Plugin:
-    FILTER_ACCEPT:        typing.ClassVar[str]                  = "OK"
-    FILTER_REJECT:        typing.ClassVar[str]                  = "REJECT"
-    FILTER_REJECT_SILENT: typing.ClassVar[str]                  = "SILENT"
-    FILTER_RESPONSES:     typing.ClassVar[tuple[str, str, str]] = (FILTER_ACCEPT, FILTER_REJECT, FILTER_REJECT_SILENT)
-
     # User initialised
     ed_privkey:           bytes # ed25519
     display_name:         str
@@ -471,24 +484,18 @@ class Plugin:
             #  b'user_id': 5,
             #  b'whisper_mods': 0}
 
-            resp = self.filter(req)
-            if resp not in self.FILTER_RESPONSES:
-                log.warning(f"plugin.filter() must return one of {Plugin.FILTER_RESPONSES}")
-                return oxenc.bt_serialize("REJECT")
-
+            resp: FilterResponse = self.filter(req)
             print(f"filter_message returning '{resp}' as filter response")
             return oxenc.bt_serialize(resp)
         except Exception as e:
             print(f"Exception filtering message: {e}")
-            return oxenc.bt_serialize("REJECT")
+            return oxenc.bt_serialize(FilterResponse.Reject)
 
-    def filter(self, req: FilterMessageRequest):  # pyright: ignore[reportUnusedParameter]
+    def filter(self, req: FilterMessageRequest) -> FilterResponse:  # pyright: ignore[reportUnusedParameter]
         """
         Users may override this function for custom filtering, or supply a callable filter object
-
-        This function must return one of FILTER_ACCEPT, FILTER_REJECT, or FILTER_REJECT_SILENT
         """
-        return self.FILTER_ACCEPT
+        return FilterResponse.Accept
 
     def reply(
         self,

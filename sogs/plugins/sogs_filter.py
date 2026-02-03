@@ -1,7 +1,6 @@
 import re
-from sogs.plugin import Plugin, ReplySettings
+from sogs.plugin import Plugin, ReplySettings, FilterResponse
 from sogs.model.post import Post
-
 
 def profanity_check(*args):
     import better_profanity
@@ -143,7 +142,7 @@ class SogsFilterPlugin(Plugin):
     def filter(self, request):
         # is_mod should be "mod" but is empty if not, so just check len
         if request[b"is_mod"] and not self.filter_mods:
-            return self.FILTER_ACCEPT
+            return FilterResponse.Accept
 
         if request[b"message_id"] != -1:
             print("message filter request is an edit")
@@ -158,11 +157,11 @@ class SogsFilterPlugin(Plugin):
             print("filter using global settings")
 
         if not (settings['profanity_filter'] or settings['alphabet_filters']):
-            return self.FILTER_ACCEPT
+            return FilterResponse.Accept
 
         msg = Post(raw=request[b"message_data"])
 
-        prof_result = self.FILTER_ACCEPT
+        prof_result = FilterResponse.Accept
         if settings['profanity_filter'] and profanity_check(msg.text, msg.username):
             reply_settings = self.get_reply_settings(room_token, filter_type='profanity')
             if reply_settings:
@@ -176,13 +175,13 @@ class SogsFilterPlugin(Plugin):
                     reply_settings=reply_settings,
                 )
             prof_result = (
-                self.FILTER_REJECT_SILENT if settings['profanity_silent'] else self.FILTER_REJECT
+                FilterResponse.Silent if settings['profanity_silent'] else FilterResponse.Reject
             )
 
         if not settings['alphabet_filters']:
             return prof_result
 
-        alpha_result = self.FILTER_ACCEPT
+        alpha_result = FilterResponse.Accept
         for lang, pattern in self.alphabet_filter_patterns:
             if lang not in settings['alphabet_filters']:
                 continue
@@ -207,16 +206,16 @@ class SogsFilterPlugin(Plugin):
                 )
 
             alpha_result = (
-                self.FILTER_REJECT_SILENT if settings['alphabet_silent'] else self.FILTER_REJECT
+                FilterResponse.Reject if settings['alphabet_silent'] else FilterResponse.Reject
             )
 
             break
 
-        if alpha_result == self.FILTER_REJECT or prof_result == self.FILTER_REJECT:
+        if alpha_result == FilterResponse.Reject or prof_result == FilterResponse.Reject:
             # Example of re-injecting the message later if some other approval process succeeds:
             # msg_id = self.inject_message(room_token, user_session_id, message_data, sig, whisper_target = whisper_target, whisper_mods = whisper_mods)
-            return self.FILTER_REJECT
-        elif alpha_result == self.FILTER_REJECT_SILENT or prof_result == self.FILTER_REJECT_SILENT:
-            return self.FILTER_REJECT_SILENT
+            return FilterResponse.Reject
+        elif alpha_result == FilterResponse.Silent or prof_result == FilterResponse.Silent:
+            return FilterResponse.Silent
 
-        return self.FILTER_ACCEPT
+        return FilterResponse.Accept

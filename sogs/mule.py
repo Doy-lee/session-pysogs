@@ -188,42 +188,37 @@ def message_request(m: oxenmq.Message):
 
     responded = False
     try:
-        command = ""
-        request = bt_deserialize(m.dataview()[0])
-        bytestring_fixup(request, [b"alt_id"])
+        request_raw: dict[bytes, bt_value]            = bt_deserialize(m.dataview()[0])
+        request:     sogs.plugin.FilterMessageRequest = sogs.plugin.FilterMessageRequest.from_bencode(request_raw)
 
-        if isinstance(request[b"alt_id"], bytes):
-            app.logger.warning(f"bytestring_fixup is not make the bytes to str!!!!")
-
-        filter_resp = plugin_filter_message(m.data(), request)
+        filter_resp = plugin_filter_message(m.data(), room_id=request.room_id)
         if filter_resp == "REJECT":
             return bt_serialize({"error": "Message rejected by filter plugin(s)"})
         elif filter_resp == "SILENT":
-            request[b"filtered"] = True
+            request_raw[b"filtered"] = True
 
-        msg = Post(raw=request[b"message_data"])
-
-        # TODO: make the trigger character configurable
+        # TODO: Make the command trigger character configurable
+        command = ""
+        msg     = Post(raw=request.message_data)
         if msg.text.startswith('/'):
             app.logger.debug(f"Processing slash command, pre-command phase")
-
             command = msg.text.split(' ')[0]
 
         if command:
-            if not plugin_pre_message_commands(m.data(), request, command):
+            if not plugin_pre_message_commands(m.data(), request_raw, command):
                 return bt_serialize({"ok": True})
 
         # TODO: pre-insertion plugin command, e.g. not a command and passed all filters,
         #       but for some other reason we don't want to insert it (or not yet).
 
         # TODO: handle edit message
-        room = Room(id=request[b"room_id"])
-        msg_id = room.insert_message(request)
+        room = Room(id=request.room_id)
+        msg_id = room.insert_message(request_raw)
         responded = True
         # manually reply so we don't hold up the worker longer than necessary
         m.reply(bt_serialize({"ok": True, "msg_id": msg_id}))
 
-        plugin_post_message_commands(m.data(), request, command)
+        plugin_post_message_commands(m.data(), request_raw, command)
         on_message_posted(msg_id)
 
         return
@@ -287,51 +282,48 @@ def message_edited(m: oxenmq.Message):
 
 
 @log_exceptions
-def plugin_filter_message(data, deserialized_data):
-    plugin_ids = {}
-    plugin_ids = get_relevant_plugins("approver = 1", room_id=deserialized_data[b"room_id"])
-
+def plugin_filter_message(data: bytes, room_id: int) -> sogs.plugin.FilterResponse:
+    plugin_ids: dict[PluginID, PluginInfo] | None = get_relevant_plugins("approver = 1", room_id=room_id)
     if not plugin_ids:
-        return "OK"
+        return sogs.plugin.FilterResponse.Accept
 
     app.logger.debug(f"Requesting message approval from {len(plugin_ids)} plugins.")
 
-    for plugin_id in plugin_ids:
-        if plugin_ids[plugin_id] and plugin_id not in plugin_conns:
-            return "REJECT"
+    # If the plugin is required for the filtering step and we don't have have an OMQ connection for
+    # it to forward the message to for filtering, then we reject the message outright.
+    for id in plugin_ids:
+        if plugin_ids[id].required and id not in plugin_conns:
+            return sogs.plugin.FilterResponse.Reject
 
-    pending_requests = []
-    for plugin_id in plugin_ids:
-        # not-required plugin is not connected, skip
-        if plugin_id not in plugin_conns:
-            continue
+    # Submit the message to the plugins and collect the async handles
+    pending_requests: list[oxenmq.ResultFuture] = []
+    for id in plugin_ids:
+        pending_requests.append(o.omq.request_future(plugin_conns[id],
+                                                     "plugin.filter_message",
+                                                     data,
+                                                     timeout=timedelta(seconds=1).seconds))
 
-        r = o.omq.request_future(
-            plugin_conns[plugin_id], "plugin.filter_message", data, timeout=timedelta(seconds=1)
-        )
-        if not r:
-            return "REJECT"
-        pending_requests.append(r)
-
+    # Await all the async handles
     silent = False
     for pending in pending_requests:
         try:
-            response = pending.get()
-            if (not response) or (not len(response) == 1):
-                return "REJECT"
-            resp_text = bt_deserialize(response[0])
-            if resp_text == b"OK":
+            response: list[bytes] = pending.get()
+            if len(response) != 1:
+                return sogs.plugin.FilterResponse.Reject
+
+            resp_text: str = typing.cast(bytes, bt_deserialize(response[0])).decode('utf-8')
+            if resp_text == sogs.plugin.FilterResponse.Accept:
                 continue
-            elif resp_text == b"SILENT":
+            elif resp_text == sogs.plugin.FilterResponse.Silent:
                 silent = True
                 continue
             else:
-                return "REJECT"
+                return sogs.plugin.FilterResponse.Reject
         except Exception as e:
             app.logger.warning(f"Plugin filter exception: {e}")
-            return "REJECT"
+            return sogs.plugin.FilterResponse.Reject
 
-    return "SILENT" if silent else "OK"
+    return sogs.plugin.FilterResponse.Silent if silent else sogs.plugin.FilterResponse.Accept
 
 
 @needs_app_context

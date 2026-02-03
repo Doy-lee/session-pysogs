@@ -634,7 +634,7 @@ def set_future_permissions(room, sid):
     scheduled against the *blinded* Session ID, if known, rather than the unblinded id.
     """
 
-    user = user.User(session_id=sid)
+    user = muser.User(session_id=sid)
     req = request.json
 
     perms = {}
