@@ -2037,10 +2037,9 @@ class Room:
 
     def add_future_permission(
         self,
-        user,
+        user: User,
         *,
         at: float,
-        mod: User,
         read: Optional[bool] = None,
         write: Optional[bool] = None,
         upload: Optional[bool] = None,

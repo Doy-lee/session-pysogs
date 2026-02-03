@@ -634,7 +634,7 @@ def set_future_permissions(room, sid):
     scheduled against the *blinded* Session ID, if known, rather than the unblinded id.
     """
 
-    user = muser.User(session_id=sid)
+    user = user.User(session_id=sid)
     req = request.json
 
     perms = {}
@@ -661,8 +661,7 @@ def set_future_permissions(room, sid):
         abort(http.BAD_REQUEST)
 
     with db.transaction():
-        room.add_future_permission(user, mod=g.user, at=time.time() + duration, **perms)
-
+        room.add_future_permission(user, at=time.time() + duration, **perms)
         res = room.user_future_permissions(user)
 
     return jsonify(res)

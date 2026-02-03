@@ -5,7 +5,7 @@ import functools
 import dataclasses
 import typing
 import oxenmq
-import plugin
+import sogs.plugin
 
 from oxenc import bt_deserialize, bt_serialize
 from datetime import timedelta
@@ -350,7 +350,7 @@ def plugin_message_commands(data, deserialized_data, command, pre_command: bool)
     As these are special, they are handled elsewhere, not in this function
     """
 
-    commands_container = plugin_pre_commands if pre_command else elugin_post_commands
+    commands_container = plugin_pre_commands if pre_command else plugin_post_commands
     command_type: str  = "pre_message_command" if pre_command else "post_message_command"
 
     if command not in commands_container:
@@ -575,32 +575,33 @@ def plugin_set_user_room_permissions(m: oxenmq.Message):
     if not metadata:
         return
 
-    req: dict[bytes, bt_value] = bt_deserialize(m.dataview()[0])
+    req_raw: dict[bytes, bt_value] = bt_deserialize(m.dataview()[0])
+    req                            = sogs.plugin.SetUserRoomPermissions.from_bencode(req_raw)
     try:
-        if b'room_id' in req:
-            room = Room(id=req[b'room_id'])
-        elif b'room_token' in req:
-            room = Room(typing.cast(bytes, token=req[b'room_token']).decode('ascii'))
+        if req.room_id is not None:
+            room = Room(id=req.room_id)
+        elif req.room_token is not None:
+            room = Room(token=req.room_token.decode('ascii'))
         else:
             return bt_serialize("Must specify a room for user permissions change.")
-        if b'user_id' in req:
-            user = User(id=typing.cast(int, req[b'user_id']), autovivify=False)
-        elif b'user_session_id' in req:
-            user = User(session_id=typing.cast(bytes, req[b'user_session_id']).decode('ascii'))
+
+        if req.user_id is not None:
+            user = User(id=req.user_id, autovivify=False)
+        elif req.user_session_id is not None:
+            user = User(session_id=req.user_session_id.hex())
         else:
             return bt_serialize("Must specify a user for user permissions change.")
+
         new_perms = {}
-        for key in (b'accessible', b'read', b'write'):
-            if key in req:
-                k = key.decode('ascii')
-                new_perms[k] = req[key]
-                if new_perms[k] == -1:
-                    new_perms[k] = None
-        if b"in" in req:
-            set_at: float = time.time() + float(typing.cast(int, req[b'in']))
-            room.add_future_permission(user, mod=metadata.user, at=set_at, **new_perms)
+        for key, value in (('accessible', req.accessible), ('read', req.read), ('write', req.write)):
+            if value is not None:
+                new_perms[key] = value
+
+        if req.in_s is not None:
+            set_at: float = time.time() + float(req.in_s)
+            room.add_future_permission(user, at=set_at, **new_perms)
         else:
-            room.set_permissions(user, mod=user, **new_perms)
+            room.set_permissions(user, mod=metadata.user, **new_perms)
 
     except NoSuchRoom as e:
         return bt_serialize("NoSuchRoom")
@@ -619,8 +620,11 @@ def plugin_delete_message(m: oxenmq.Message):
     """
     For now, plugins can only delete messages they created.
     """
-    if m.conn not in plugin_conn_info or 'user' not in plugin_conn_info[m.conn]:
+    metadata = _require_plugin_conn_info(m.conn, need_user=True, msg_prefix="Failed to delete message")
+    if not metadata:
         return
+
+    assert metadata.user
     req = bt_deserialize(m.dataview()[0])
     msg_ids = []
     if b'msg_ids' in req:
@@ -634,7 +638,7 @@ def plugin_delete_message(m: oxenmq.Message):
             rowcount = query(
                 """DELETE FROM message_details WHERE id IN :msg_ids AND "user" = :user""",
                 msg_ids=msg_ids,
-                user=plugin_conn_info[m.conn]['user'].id,
+                user=metadata.user.id,
                 bind_expanding=['msg_ids'],
             )
             if rowcount:
@@ -721,11 +725,11 @@ def plugin_insert_message(m: oxenmq.Message):
 @needs_app_context
 @log_exceptions
 def plugin_upload_file(m: oxenmq.Message):
-    if m.conn not in plugin_conn_info or 'user' not in plugin_conn_info[m.conn]:
+    metadata: PluginMetadata | None = _require_plugin_conn_info(m.conn, need_user=True, msg_prefix="Failed to upload file")
+    if not metadata:
         return
 
     req = bt_deserialize(m.dataview()[0])
-
     with db.transaction():
         try:
             room = Room(token=req[b"room_token"].decode("ascii"))
@@ -735,7 +739,7 @@ def plugin_upload_file(m: oxenmq.Message):
 
         # just passing this as bytes(req[b'file_contents']) was complaining about the type...?
         content = bytes(req[b'file_contents'])
-        file_id = room.upload_file(content, plugin_conn_info[m.conn]['user'], filename=req[b'filename'].decode('utf-8'), lifetime=3600.0)
+        file_id = room.upload_file(content, metadata.user, filename=req[b'filename'].decode('utf-8'), lifetime=3600.0)
 
         url = f"{config.URL_BASE}/{room.token}/file/{file_id}"
         return bt_serialize({'file_id': file_id, "url": url})

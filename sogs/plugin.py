@@ -114,6 +114,65 @@ class SetUserRoomPermissionsResponse(enum.Enum):
     Ok         = 4
 
 @dataclasses.dataclass
+class SetUserRoomPermissions:
+    room_id:         int       | None = None
+    room_token:      bytes     | None = None
+    user_id:         int       | None = None
+    user_session_id: SessionID | None = None
+    accessible:      bool      | None = None
+    read:            bool      | None = None
+    write:           bool      | None = None
+    in_s:            int       | None = None
+
+    @classmethod
+    def from_bencode(cls, src: dict[bytes, bt_value]):
+        result = SetUserRoomPermissions()
+        if b'room_id' in src:
+            result.room_id = typing.cast(int, src[b'room_id'])
+        elif b'room_token' in src:
+            result.room_token = typing.cast(bytes, src[b'room_token'])
+
+        if b'user_id' in src:
+            result.user_id = typing.cast(int, src[b'user_id'])
+        elif b'user_session_id' in src:
+            result.user_session_id = bytes.fromhex(typing.cast(bytes, src[b'user_session_id']).decode('utf-8'))
+
+        if b'accessible' in src:
+            result.accessible = typing.cast(bool, src[b'accessible'])
+        if b'read' in src:
+            result.read = typing.cast(bool, src[b'read'])
+        if b'write' in src:
+            result.write = typing.cast(bool, src[b'write'])
+
+        if b'in' in src:
+            result.in_s = typing.cast(int, src[b'in'])
+        return result
+
+    def to_bencode(self) -> dict[bytes, bt_value]:
+        result: dict[bytes, bt_value] = {}
+
+        if self.room_id is not None:
+            result[b'room_id'] = self.room_id
+        elif self.room_token is not None:
+            result[b'room_token'] = self.room_token
+
+        if self.user_id is not None:
+            result[b'user_id'] = self.user_id
+        elif self.user_session_id is not None:
+            result[b'user_session_id'] = self.user_session_id.hex().encode('utf-8')
+
+        if self.accessible is not None:
+            result[b'accessible'] = self.accessible
+        if self.read is not None:
+            result[b'read'] = self.read
+        if self.write is not None:
+            result[b'write'] = self.write
+
+        if self.in_s is not None:
+            result[b'in'] = self.in_s
+        return result
+
+@dataclasses.dataclass
 class PluginConfigFromINI:
     ini:          configparser.ConfigParser = dataclasses.field(default_factory=lambda: configparser.ConfigParser(strict=False))
     success:      bool                      = False
@@ -474,13 +533,13 @@ class Plugin:
           - User must be set to either the user's 33b blinded Session ID or the ID of the user.
           - At least one of the permissions must be set, accessible, read, or write.
         """
-        req: dict[bytes, bt_value] = {}
+        req = SetUserRoomPermissions()
 
         # NOTE: Set the room
         if isinstance(room, int):
-            req[b"room_id"] = room
+            req.room_id = room
         elif isinstance(room, bytes):
-            req[b"room_token"] = room
+            req.room_token = room
         else:
             print("Room identifier (token `bytes` or id `int`) is required for permissions changes.")
             return SetUserRoomPermissionsResponse.InvalidArg
@@ -490,9 +549,9 @@ class Plugin:
             if len(user) != 33:
                 print("User passed as `SessionID` must be a 33b blinded public key for permissions changes.")
                 return SetUserRoomPermissionsResponse.InvalidArg
-            req[b"user_session_id"] = user.hex()
+            req.user_session_id = user
         elif isinstance(user, int):
-            req[b"user_id"] = user
+            req.user_id = user
         else:
             print("User (`SessionID` or id `int`) is required for permissions changes.")
             return SetUserRoomPermissionsResponse.InvalidArg
@@ -501,12 +560,12 @@ class Plugin:
         if not accessible and not read and not write:
             print("At least one permission should be specified (`accessible`, `read`, `write`) for permissions changes.")
             return SetUserRoomPermissionsResponse.InvalidArg
-        if accessible:
-            req[b"accessible"] = accessible
-        if read:
-            req[b"read"] = read
-        if write:
-            req[b"write"] = write
+        if accessible is not None:
+            req.accessible = accessible
+        if read is not None:
+            req.read = read
+        if write is not None:
+            req.write = write
 
         # NOTE: Set enqueued permission change
         if sec_from_now:
@@ -515,12 +574,12 @@ class Plugin:
                 print(f"Enqueuing a permission change in the future must be bounded between [0 < {sec_from_now} < {UPPER_BOUND}]")
                 return SetUserRoomPermissionsResponse.InvalidArg
 
-            req[b"in"] = sec_from_now
+            req.in_s = sec_from_now
 
         # NOTE: Request and response
         result                         = SetUserRoomPermissionsResponse.Error
         conn:      oxenmq.ConnectionID = self._require_conn_established();
-        future:    oxenmq.ResultFuture = self.omq.request_future(conn, "plugin.set_user_room_permissions", oxenc.bt_serialize(req), request_timeout=timedelta(seconds=5))
+        future:    oxenmq.ResultFuture = self.omq.request_future(conn, "plugin.set_user_room_permissions", oxenc.bt_serialize(req.to_bencode()), request_timeout=timedelta(seconds=5))
         resp_list: list[bytes]         = future.get()
         resp:      bytes               = resp_list[0]
         assert len(resp_list) == 1
