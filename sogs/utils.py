@@ -2,11 +2,21 @@ from . import crypto
 from . import config
 from . import http
 
+import typing
 import base64
 from flask import request, abort, Response
 import json
 from typing import Union, Tuple
 
+# Represents the different variants of data types that a primitive bencoded type can hold. These
+# values are produced and consumed by the module oxenc's bt_serialize/bt_deserialize functions.
+bt_value: typing.TypeAlias = (
+    int
+    | bytes
+    | str
+    | list["bt_value"]
+    | dict[bytes | str, "bt_value"]
+)
 
 def encode_base64(data: bytes):
     return base64.b64encode(data).decode()

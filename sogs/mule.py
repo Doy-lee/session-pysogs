@@ -1,13 +1,17 @@
 import traceback
 import oxenmq
-from oxenc import bt_deserialize, bt_serialize
 import time
-from datetime import timedelta
 import functools
-from nacl.encoding import HexEncoder
+import dataclasses
 import typing
-import collections.abc
+import oxenmq
+import plugin
 
+from oxenc import bt_deserialize, bt_serialize
+from datetime import timedelta
+from nacl.encoding import HexEncoder
+
+from sogs.utils import bt_value
 from .web import app
 from . import cleanup
 from . import config
@@ -20,21 +24,38 @@ from .model.post import Post
 
 from . import db
 
+# Plugin identifier that is unique to the database for the SOGS. It is the row ID primary key from
+# SQL allocated to the plugin when it is registered to the DB in the `plugins` table.
+PluginID: typing.TypeAlias = int
+
 # This is the uwsgi "mule" that handles things not related to serving HTTP requests:
 # - it holds the oxenmq instance (with its own interface into sogs)
 # - it handles cleanup jobs (e.g. periodic deletions)
 
 # holds plugin_id -> plugin omq connection for connected plugins
-plugin_conns = {}
+plugin_conns: dict[PluginID, oxenmq.ConnectionID] = {}
+
+@dataclasses.dataclass
+class PluginMetadata:
+    id:   PluginID    = 0
+    name: str         = ''
+    # A plugin manifests itself as a user in the community. When a plugin identifies itself to the
+    # SOGS (e.g. starts hello handshake), the user account for the plugin gets added as a
+    # moderator/admin. This field is the user info for said user representing the plugin.
+    user: User | None = None
 
 # holds oxenmq ConnectionID -> metadata (plugin_id, plugin session_id, etc.)
-plugin_conn_info = {}
+plugin_conn_info: dict[oxenmq.ConnectionID, PluginMetadata] = {}
 
 # holds command -> plugin_id for commands registered by plugins
 # key includes the prefix (default slash, may make configurable)
-plugin_pre_commands = {}
-plugin_post_commands = {}
+plugin_pre_commands:  dict[str, set[PluginID]] = {}
+plugin_post_commands: dict[str, set[PluginID]] = {}
 
+@dataclasses.dataclass
+class PluginInfo:
+    required: bool = False
+    name:     str  = ''
 
 # not changing the keys, since this is just for fixing the values if they
 # need to be str and not bytes
@@ -99,7 +120,7 @@ def inproc_fail(connid, reason):
 
 @needs_app_context
 @log_exceptions
-def get_relevant_plugins(where_clause: str, room_id: int | None = None, room_token: str | None = None) -> dict[int, bool] | None:
+def get_relevant_plugins(where_clause: str, room_id: int | None = None, room_token: str | None = None) -> dict[PluginID, PluginInfo] | None:
     """
     Retrieve plugins that match the given filter criteria from both global and room-specific contexts.
 
@@ -121,16 +142,16 @@ def get_relevant_plugins(where_clause: str, room_id: int | None = None, room_tok
         lookup fails. The required status is True if the plugin is marked as required in either
         the global or room-specific context (logical OR of both settings).
     """
-    result: dict[int, bool] = {}
+    result: dict[PluginID, PluginInfo] = {}
     with db.transaction():
         # Query global plugins that match the where_clause
-        query_str = "SELECT id, required FROM plugins WHERE global = 1 AND " + where_clause
+        query_str = "SELECT id, name, required FROM plugins WHERE global = 1 AND " + where_clause
         rows      = query(query_str)
         for row in rows:
             required = False
             if row['required'] and row['required'] == 1:
                 required = True
-            result[row['id']] = required
+            result[row['id']] = PluginInfo(required=required, name=row['name'])
 
         # Resolve room_token to room_id if needed
         if room_token and not room_id:
@@ -329,8 +350,8 @@ def plugin_message_commands(data, deserialized_data, command, pre_command: bool)
     As these are special, they are handled elsewhere, not in this function
     """
 
-    commands_container = plugin_pre_commands if pre_command else plugin_post_commands
-    command_type = "pre_message_command" if pre_command else "post_message_command"
+    commands_container = plugin_pre_commands if pre_command else elugin_post_commands
+    command_type: str  = "pre_message_command" if pre_command else "post_message_command"
 
     if command not in commands_container:
         # FIXME: Should we (silently?) drop messages which start with '/' but aren't registered commands?
@@ -433,8 +454,7 @@ def plugin_hello(m: oxenmq.Message):
     new_plugin_conn = False
     with db.transaction():
 
-        row = query("SELECT id FROM plugins WHERE auth_key = :key", key=m.conn.pubkey).first()
-
+        row = query("SELECT id, name FROM plugins WHERE auth_key = :key", key=m.conn.pubkey).first()
         if row is None:
             # TODO: would like to close conn in this case, but oxenmq only allows close on outgoing conns.
             app.logger.warning(f"No plugin found with key: {m.conn.pubkey}")
@@ -442,23 +462,25 @@ def plugin_hello(m: oxenmq.Message):
 
         plugin_conns[row['id']] = m.conn
         if m.conn not in plugin_conn_info:
-            new_plugin_conn = True
-            plugin_conn_info[m.conn] = {}
-        plugin_conn_info[m.conn]['plugin_id'] = row['id']
+            new_plugin_conn          = True
+            plugin_conn_info[m.conn] = PluginMetadata()
 
+        metadata: PluginMetadata = plugin_conn_info[m.conn]
+        metadata.id              = typing.cast(int, row['id'])
         try:
             if len(m.dataview()):
-                session_id = bt_deserialize(m.dataview()[0]).decode('ascii')
-                u = User(session_id=session_id, autovivify=True)
+                session_id: str = bt_deserialize(m.dataview()[0]).decode('ascii')
+                u               = User(session_id=session_id, autovivify=True)
+
                 # TODO: handle plugin permissions and setup better
                 admin_user = User(id=0)
                 u.set_moderator(added_by=admin_user, visible=True)
-                plugin_conn_info[m.conn]['user'] = u
+                metadata.user = u
         except Exception as e:
             app.logger.warning(f"Plugin with id {row['id']} tried to register bad session_id.")
             del plugin_conns[row['id']]
             del plugin_conn_info[m.conn]
-            return bt_serialize("Bad session_id")
+            return bt_serialize("BadSessionID")
 
     new_str = "new " if new_plugin_conn else ""
     app.logger.debug(f"Added {new_str}plugin connection for known key: {m.conn.pubkey}")
@@ -471,33 +493,56 @@ def plugin_hello(m: oxenmq.Message):
     return bt_serialize("OK")
 
 
+def _require_plugin_conn_info(conn: oxenmq.ConnectionID, need_user: bool, msg_prefix: str) -> PluginMetadata | None:
+    result: PluginMetadata | None = None
+    if conn not in plugin_conn_info:
+        app.logger.warning((f"{msg_prefix}: There is no plugin registered under the connection ID "
+                             "{conn}. Has the plugin called `Plugin.say_hello()` yet, or check if "
+                             "there was any networking via OMQ communication errors from the "
+                             "plugin or SOGs"))
+        return result
+
+    result = plugin_conn_info[conn]
+    if need_user and not result.user:
+        app.logger.warning((f"{msg_prefix}: There is no user registered for the plugin "
+                             "'{result.name}' (id={result.id}) at connection ID {conn}. Has the "
+                             "plugin called `Plugin.say_hello()` and passed a Session ID, or check "
+                             "if there was any networking via OMQ communication errors from the "
+                             "plugin or SOGs"))
+        return result
+
+    assert result.id != 0
+    return result
+
 @needs_app_context
 @log_exceptions
 def plugin_register_command(m: oxenmq.Message, pre_command: bool):
-    if m.conn not in plugin_conn_info or 'plugin_id' not in plugin_conn_info[m.conn]:
-        # plugin hasn't said hello yet, the jerk!
+    metadata: PluginMetadata | None = _require_plugin_conn_info(m.conn, need_user=False, msg_prefix="Failed to register plugin")
+    if not metadata:
         return
 
-    command_type = "pre_command" if pre_command else "post_command"
-    commands_container = plugin_pre_commands if pre_command else plugin_post_commands
+    command_type:       str                      = "pre_command" if pre_command else "post_command"
+    commands_container: dict[str, set[PluginID]] = plugin_pre_commands if pre_command else plugin_post_commands
 
-    req = bt_deserialize(m.dataview()[0])
-    commands = req[b'commands']
+    req:      dict[bytes, oxenc.bt_value] = bt_deserialize(m.dataview()[0])
+    commands: list[bytes]                 = typing.cast(list[bytes], req[b'commands'])
     app.logger.debug(f"register_{command_type}, commands: {commands}")
     for command in commands:
-        app.logger.debug(
-            f"trying to add {command_type} {command} for plugin {plugin_conn_info[m.conn]['plugin_id']}"
-        )
-        if not command.startswith(b'/'):
-            return
+        command_utf8: str = ''
+        try:
+            command_utf8 = command.decode('utf-8')
+        except Exception as e:
+            app.logger.warning(f"Failed to register command {command_type} '{command}' for plugin '{metadata.name}' (id={metadata.id}), decoding to UTF8 failed: {e}")
+            continue
 
-        command = command.decode('utf-8')
-        app.logger.debug(
-            f"adding {command_type} {command} for plugin {plugin_conn_info[m.conn]['plugin_id']}"
-        )
-        if command not in commands_container:
-            commands_container[command] = set()
-        commands_container[command].add(plugin_conn_info[m.conn]['plugin_id'])
+        if not command_utf8.startswith('/'):
+            app.logger.warning(f"Failed to register command {command_type} '{command_utf8}' for plugin '{metadata.name}' (id={metadata.id}): Commands must start with leading '/'")
+            continue
+
+        app.logger.debug(f"Registering {command_type} {command} for plugin '{metadata.name}' (id={metadata.id})")
+        if command_utf8 not in commands_container:
+            commands_container[command_utf8] = set()
+        commands_container[command_utf8].add(metadata.id)
 
 
 def plugin_register_pre_command(m: oxenmq.Message):
@@ -526,21 +571,22 @@ def plugin_set_user_room_permissions(m: oxenmq.Message):
     user room permissions will be changed as specified; omitting access/read/write means
     leave that value unchanged.
     """
-    if not plugin_conn_info[m.conn]['user']:
-        return bt_serialize("Must call 'hello' with plugin session_id at least once")
+    metadata = _require_plugin_conn_info(m.conn, need_user=True, msg_prefix="Failed to set user room permissions")
+    if not metadata:
+        return
 
-    req = bt_deserialize(m.dataview()[0])
+    req: dict[bytes, bt_value] = bt_deserialize(m.dataview()[0])
     try:
         if b'room_id' in req:
             room = Room(id=req[b'room_id'])
         elif b'room_token' in req:
-            room = Room(token=req[b'room_token'].decode('ascii'))
+            room = Room(typing.cast(bytes, token=req[b'room_token']).decode('ascii'))
         else:
             return bt_serialize("Must specify a room for user permissions change.")
         if b'user_id' in req:
-            user = User(id=req[b'user_id'], autovivify=False)
+            user = User(id=typing.cast(int, req[b'user_id']), autovivify=False)
         elif b'user_session_id' in req:
-            user = User(session_id=req[b'user_session_id'].decode('ascii'))
+            user = User(session_id=typing.cast(bytes, req[b'user_session_id']).decode('ascii'))
         else:
             return bt_serialize("Must specify a user for user permissions change.")
         new_perms = {}
@@ -550,13 +596,11 @@ def plugin_set_user_room_permissions(m: oxenmq.Message):
                 new_perms[k] = req[key]
                 if new_perms[k] == -1:
                     new_perms[k] = None
-        if b'in' in req:
-            set_at = time.time() + req[b'in']
-            room.add_future_permission(
-                user, mod=plugin_conn_info[m.conn]['user'], at=set_at, **new_perms
-            )
+        if b"in" in req:
+            set_at: float = time.time() + float(typing.cast(int, req[b'in']))
+            room.add_future_permission(user, mod=metadata.user, at=set_at, **new_perms)
         else:
-            room.set_permissions(user, mod=plugin_conn_info[m.conn]['user'], **new_perms)
+            room.set_permissions(user, mod=user, **new_perms)
 
     except NoSuchRoom as e:
         return bt_serialize("NoSuchRoom")
@@ -793,10 +837,11 @@ def plugin_remove_reactions(m: oxenmq.Message):
 def on_reaction_posted(m: oxenmq.Message):
     msg_dict = bt_deserialize(m.dataview()[0])
     app.logger.warn(f"on_reaction_posted, reaction:\n{msg_dict}")
-    plugin_ids = get_relevant_plugins("subscribe = 1", room_id=msg_dict[b'room_id'])
-    for plugin_id in plugin_ids.keys():
-        if plugin_id in plugin_conns:
-            app.logger.warn(f"Sending reaction to plugin {plugin_id}")
+    plugin_ids: dict[PluginID, PluginInfo] = get_relevant_plugins("subscribe = 1", room_id=msg_dict[b'room_id'])
+    for key in plugin_ids:
+        if key in plugin_conns:
+            plugin_info: PluginInfo = plugin_ids[key]
+            app.logger.warn(f"Sending reaction to plugin '{plugin_info.name}' (id={key}, required={plugin_info.name})")
             o.omq.send(plugin_conns[plugin_id], "plugin.reaction_posted", m.data())
 
 

@@ -9,6 +9,7 @@ import typing_extensions
 import datetime
 import configparser
 
+from sogs.utils      import bt_value
 from typing          import Callable
 from datetime        import timedelta
 from sogs.model.post import Post
@@ -38,16 +39,6 @@ SessionID:  typing.TypeAlias = bytes
 RoomToken:  typing.TypeAlias = bytes
 TimestampS: typing.TypeAlias = float
 MessageID:  typing.TypeAlias = int
-
-# Represents the different variants of data types that a primitive bencoded type can hold. These
-# values are produced and consumed by the module oxenc's bt_serialize/bt_deserialize functions.
-bt_value: typing.TypeAlias = (
-    int
-    | bytes
-    | str
-    | list["bt_value"]
-    | dict[bytes | str, "bt_value"]
-)
 
 @dataclasses.dataclass
 class ReplySettings:
@@ -527,8 +518,8 @@ class Plugin:
             req[b"in"] = sec_from_now
 
         # NOTE: Request and response
-        result                     = SetUserRoomPermissionsResponse.Error
-        conn:  oxenmq.ConnectionID = self._require_conn_established();
+        result                         = SetUserRoomPermissionsResponse.Error
+        conn:      oxenmq.ConnectionID = self._require_conn_established();
         future:    oxenmq.ResultFuture = self.omq.request_future(conn, "plugin.set_user_room_permissions", oxenc.bt_serialize(req), request_timeout=timedelta(seconds=5))
         resp_list: list[bytes]         = future.get()
         resp:      bytes               = resp_list[0]

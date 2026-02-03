@@ -80,17 +80,6 @@ def entry_point(ini_path: str = 'slash_test.ini'):
         # Instantiate the plugin
         plugin = SlashTestPlugin(sogs_address=config.sogs_address, sogs_pubkey=config.sogs_pubkey, ed_privkey=ed_privkey, display_name=display_name)
 
-        # Register the plugin to the DB. SOGS uses this DB to authenticate incoming requests as long
-        # as they are signed by the x25519 key stored here. This table also contains permissions for
-        # the SOGS to further discriminate the types of requests the plugin is allowed to make.
-        #
-        # This step is optional! If you wanted to run plugins on a separate network and to remotely
-        # communicate with SOGS then you could imagine manually authorising the plugin by inserting
-        # the key into the DB out-of-band.
-        #
-        # In this example we are running the CAPTCHA plugin on a DB that is local to the application
-        # and is trusted so we authorise ourselves directly into the plugins table thus making this
-        # plugin completely standalone.
         from sogs.web import app
         with app.app_context():
             import sogs.db
