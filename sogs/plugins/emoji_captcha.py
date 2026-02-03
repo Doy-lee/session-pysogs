@@ -573,7 +573,7 @@ class EmojiCaptchaPlugin(Plugin):
     refresh_emoji:     str                                                = "\U0001F504" # Unicode refresh symbol emoji
     users:             dict[SessionID, dict[RoomToken, UserCaptchaState]] = dataclasses.field(default_factory=dict)
 
-    captcha_limit:     int                                                = 3   # Max CAPTCHA attempts per user/room
+    retry_limit:       int                                                = 3   # Max CAPTCHA attempts per user/room
     retry_timeout_s:   int                                                = 60  # Seconds to wait after failed attempt
     refresh_timeout_s: int                                                = 60  # Seconds between CAPTCHA refreshes
     write_timeout_s:   int                                                = 120  # Seconds before access grant after solve
@@ -586,7 +586,7 @@ class EmojiCaptchaPlugin(Plugin):
         # read or otherwise require them to solve captcha to proceed.
         self.register_request_read_handler(self.handle_request_read)
         log.info("Plugin initialised: refresh {}s; retry {}s; write {}s; captcha limit {}"
-                 .format(self.refresh_timeout_s, self.retry_timeout_s, self.write_timeout_s, self.captcha_limit))
+                 .format(self.refresh_timeout_s, self.retry_timeout_s, self.write_timeout_s, self.retry_limit))
 
     def get_user(self, session_id: bytes, room_token: bytes) -> UserCaptchaState | None:
         result = None
@@ -612,13 +612,13 @@ class EmojiCaptchaPlugin(Plugin):
         challenge lifecycle.
         """
         user: UserCaptchaState = self.get_or_make_user(req.session_id, req.room_token)
-        log.debug(f"Room {req.room_token} polled by 0x{req.session_id.hex()} (id={req.user_id}, challenges={user.captcha_attempts}/{self.captcha_limit})")
+        log.debug(f"Room {req.room_token} polled by 0x{req.session_id.hex()} (id={req.user_id}, challenges={user.captcha_attempts}/{self.retry_limit})")
 
         result: bt_value = self.tick(room_token=req.room_token, session_id=req.session_id, room_name=req.room_name)
         return result
 
     def _ensure_refresh_emoji_on_captcha(self, room_token: bytes, user: UserCaptchaState, msg_id: MessageID):
-        captchas_remaining: int  = self.captcha_limit - user.captcha_attempts
+        captchas_remaining: int  = self.retry_limit - user.captcha_attempts
         if not user.posted_captcha_refresh_emoji_applied and captchas_remaining > 1:
             react_resp: dict[bytes, bt_value] = self.post_reactions(room_token, msg_id, self.refresh_emoji)
             if b'status' in react_resp and react_resp[b'status'] == b'OK':
@@ -645,14 +645,14 @@ class EmojiCaptchaPlugin(Plugin):
         if 1:
             # Handle an incorrectly answered CAPTCHA. A new CAPTCHA will not be generated until
             # the `retry_timeout_s` delay has transpired since the time of the answer.
-            if user.captcha_state == CaptchaState.Ready or user.captcha_attempts >= self.captcha_limit:
+            if user.captcha_state == CaptchaState.Ready or user.captcha_attempts >= self.retry_limit:
               user.captcha_state = CaptchaState.Nil
 
             # Handle an incorrect answer, if they still have attempts remaining we post the failure
             # message and then make the user wait. If they don't have attempts left this is bypassed
             # and the state-machine no-ops.
             if user.captcha_state == CaptchaState.IncorrectAnswer:
-                attempts_remaining: int = self.captcha_limit - (user.captcha_attempts + 1)
+                attempts_remaining: int = self.retry_limit - (user.captcha_attempts + 1)
                 if attempts_remaining > 0:
                     remaining               = f"{attempts_remaining} attempt" + ("s" if attempts_remaining > 1 else "")
                     body                    = f"Incorrect emoji, a new CAPTCHA will be available in {self.retry_timeout_s} seconds. {remaining} remaining."
@@ -696,7 +696,7 @@ class EmojiCaptchaPlugin(Plugin):
             s_since_refresh: float = now - user.posted_captcha_timestamp
 
             # Cannot refresh on last attempt (would waste final try).
-            if user.refresh_state == RefreshState.Ready or user.captcha_attempts >= self.captcha_limit:
+            if user.refresh_state == RefreshState.Ready or user.captcha_attempts >= self.retry_limit:
                 user.refresh_state = RefreshState.Nil
 
             if user.refresh_state == RefreshState.Request:
@@ -704,7 +704,7 @@ class EmojiCaptchaPlugin(Plugin):
                     user.msgs_to_delete_on_tick.append(user.refresh_msg_id)
                     user.refresh_msg_id = None
 
-                if user.captcha_attempts >= (self.captcha_limit - 1):
+                if user.captcha_attempts >= (self.retry_limit - 1):
                     user.refresh_msg_id = self.post_message(room_token, EmojiCaptchaPlugin.attempt_limit_str, whisper_target=session_id, no_plugins=True)
                     if user.refresh_msg_id:
                         user.refresh_state = RefreshState.Nil
@@ -724,7 +724,7 @@ class EmojiCaptchaPlugin(Plugin):
                     user.refresh_state  = RefreshState.Ready
 
         # User exceeded attempt limit - show lockout message
-        all_captchas_used = user.captcha_attempts >= self.captcha_limit
+        all_captchas_used = user.captcha_attempts >= self.retry_limit
         if all_captchas_used and not user.captcha_limit_msg_shown:
             body = "You have reached the maximum number of CAPTCHA attempts. Contact an Administrator of the community for further assistance"
             if self.post_message(room_token, body, whisper_target=session_id, no_plugins=True) is not None:
@@ -781,7 +781,7 @@ class EmojiCaptchaPlugin(Plugin):
             user.clear_posted_captcha()
             return oxenc.bt_serialize("ERROR");
 
-        captchas_remaining: int  = self.captcha_limit - user.captcha_attempts
+        captchas_remaining: int  = self.retry_limit - user.captcha_attempts
         body: str = (f"Solve this CAPTCHA to read and send messages in {room_name}.\n\n"
                      f"React to this message with the emoji shown in the image.\n\n")
 
@@ -842,69 +842,42 @@ class EmojiCaptchaPlugin(Plugin):
 
 def entry_point(ini_path: str = 'emoji_captcha.ini'):
     import argparse
-    import configparser
-    from sogs import config as sogs_config
-
     import traceback
-    parsed_ini: configparser.ConfigParser | None = None
-    try:
-        parser = argparse.ArgumentParser(description='Emoji CAPTCHA Plugin for SOGS')
-        _      = parser.add_argument('--plugin_captcha_ini_path', type=str,
-                                     default=os.environ.get('PLUGIN_EMOJI_CAPTCHA_INI_PATH', 'emoji_captcha.ini'),
-                                     help='Path to the configuration .ini file (default: captcha.ini or set PLUGIN_EMOJI_CAPTCHA_INI_PATH env)')
-        args     = parser.parse_args()
-        ini_path = typing.cast(str, args.plugin_captcha_ini_path)
 
-        # Setup and load config file from disk
-        log.name              = 'CAPTCHA'
-        parsed_ini            = configparser.ConfigParser(strict=False)
-        files_read: list[str] = parsed_ini.read(ini_path)
+    # Argument parser
+    parser = argparse.ArgumentParser(description='Emoji CAPTCHA Plugin for SOGS')
+    _ = parser.add_argument('--plugin_emoji_captcha_ini_path', type=str,
+                            default=os.environ.get('PLUGIN_EMOJI_CAPTCHA_INI_PATH', 'emoji_captcha.ini'),
+                            help='Path to the configuration .ini file (default: emoji_captcha.ini or set PLUGIN_EMOJI_CAPTCHA_INI_PATH env)')
+    args     = parser.parse_args()
+    ini_path = typing.cast(str, args.plugin_emoji_captcha_ini_path)
 
-        log.info(f"Loading captcha plugin config from {ini_path}")
-        if len(files_read) != 1:
-            log.warning(f"Captcha .ini config file does not exist, terminating plugin. File was: {ini_path}")
-            return
-
-    except Exception:
-        log.error("Exception raised in plugin startup. Terminating:\n{}".format(traceback.format_exc()))
-
-    # Mandatory configs fields
-    assert parsed_ini
-    sogs_pubkey_hex: str | None = parsed_ini.get('plugin', 'sogs_pubkey_hex', fallback=None)
-    if not sogs_pubkey_hex:
-        log.error(f"Captcha config file field 'sogs_pubkey_hex' is missing, terminating plugin. File was: {ini_path}")
+    # Load common INI configuration
+    log.info(f"Loading Emoji CAPTCHA plugin config from {ini_path}")
+    log.name                    = 'CAPTCHA'
+    config: PluginConfigFromINI = Plugin.load_ini_from_path(ini_path)
+    if not config.success:
         return
 
-    if sogs_pubkey_hex.startswith("0x"):
-        sogs_pubkey_hex = sogs_pubkey_hex[2:]
-
-    sogs_pubkey: bytes = b''
-    try:
-        sogs_pubkey = bytes.fromhex(sogs_pubkey_hex)
-    except Exception as e:
-        log.error(f"Captcha config file field 'sogs_pubkey_hex' was not a hex string: {sogs_pubkey_hex}")
-        return
-
-    # Overridable config fields
-    sogs_address:      str        = parsed_ini.get   ('plugin',               'sogs_address',      fallback=sogs_config.OMQ_LISTEN)
-    key_file:          str        = parsed_ini.get   ('plugin_emoji_captcha', 'key_file',          fallback="plugin_emoji_captcha_ed25519")
-    display_name:      str        = parsed_ini.get   ('plugin_emoji_captcha', 'display_name',      fallback="Emoji CAPTCHA Plugin")
-    limit:             int | None = parsed_ini.getint('plugin_emoji_captcha', 'retry_limit',       fallback=None)
-    write_timeout_s:   int | None = parsed_ini.getint('plugin_emoji_captcha', 'write_timeout',     fallback=None)
-    refresh_timeout_s: int | None = parsed_ini.getint('plugin_emoji_captcha', 'refresh_timeout_s', fallback=None)
-    retry_timeout_s:   int | None = parsed_ini.getint('plugin_emoji_captcha', 'retry_timeout_s',   fallback=None)
-    ed_privkey:        bytes      = Plugin.get_or_make_ed25519_privkey(key_file)
+    # Plugin specific fields from INI
+    key_file:          str   = config.ini.get('plugin_emoji_captcha',    'key_file',          fallback="plugin_emoji_captcha_ed25519")
+    display_name:      str   = config.ini.get('plugin_emoji_captcha',    'display_name',      fallback="Emoji CAPTCHA Plugin")
+    retry_limit:       int   = config.ini.getint('plugin_emoji_captcha', 'retry_limit',       fallback=3)
+    write_timeout_s:   int   = config.ini.getint('plugin_emoji_captcha', 'write_timeout',     fallback=120)
+    refresh_timeout_s: int   = config.ini.getint('plugin_emoji_captcha', 'refresh_timeout_s', fallback=60)
+    retry_timeout_s:   int   = config.ini.getint('plugin_emoji_captcha', 'retry_timeout_s',   fallback=60)
+    ed_privkey:        bytes = Plugin.get_or_make_ed25519_privkey(key_file)
 
     try:
         # Instantiate the plugin and configure extra fields in the plugin
-        plugin                   = EmojiCaptchaPlugin(sogs_address=sogs_address, sogs_pubkey=sogs_pubkey, ed_privkey=ed_privkey, display_name=display_name)
-        plugin.captcha_limit     = limit             if limit             else plugin.captcha_limit
-        plugin.retry_timeout_s   = retry_timeout_s   if retry_timeout_s   else plugin.retry_timeout_s
-        plugin.refresh_timeout_s = refresh_timeout_s if refresh_timeout_s else plugin.refresh_timeout_s
-        plugin.write_timeout_s   = write_timeout_s   if write_timeout_s   else plugin.write_timeout_s
+        plugin                   = EmojiCaptchaPlugin(sogs_address=config.sogs_address, sogs_pubkey=config.sogs_pubkey, ed_privkey=ed_privkey, display_name=display_name)
+        plugin.retry_limit       = retry_limit
+        plugin.retry_timeout_s   = retry_timeout_s
+        plugin.refresh_timeout_s = refresh_timeout_s
+        plugin.write_timeout_s   = write_timeout_s
 
         # Register the plugin to the DB. SOGS uses this DB to authenticate incoming requests as long
-        # as they are signed by the ed25519 key stored here. This table also contains permissions for
+        # as they are signed by the x25519 key stored here. This table also contains permissions for
         # the SOGS to further discriminate the types of requests the plugin is allowed to make.
         #
         # This step is optional! If you wanted to run plugins on a separate network and to remotely

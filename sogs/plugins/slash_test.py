@@ -66,19 +66,19 @@ def entry_point(ini_path: str = 'slash_test.ini'):
 
     # Load common INI configuration
     log.info(f"Loading Slash Test plugin config from {ini_path}")
-    log.name                        = 'SLASH_TEST'
-    plugin_ini: PluginConfigFromINI = Plugin.load_ini_from_path(ini_path)
-    if not plugin_ini.success:
+    log.name                    = 'SLASH_TEST'
+    config: PluginConfigFromINI = Plugin.load_ini_from_path(ini_path)
+    if not config.success:
         return
 
     # Plugin specific fields from INI
-    key_file:     str = plugin_ini.ini.get('plugin_slash_test', 'key_file',     fallback="slash_test_ed25519")
-    display_name: str = plugin_ini.ini.get('plugin_slash_test', 'display_name', fallback="Slash Test Plugin")
+    key_file:     str   = config.ini.get('plugin_slash_test', 'key_file',     fallback="slash_test_ed25519")
+    display_name: str   = config.ini.get('plugin_slash_test', 'display_name', fallback="Slash Test Plugin")
     ed_privkey:   bytes = Plugin.get_or_make_ed25519_privkey(key_file)
 
     try:
         # Instantiate the plugin
-        plugin = SlashTestPlugin(sogs_address=plugin_ini.sogs_address, sogs_pubkey=plugin_ini.sogs_pubkey, ed_privkey=ed_privkey, display_name=display_name)
+        plugin = SlashTestPlugin(sogs_address=config.sogs_address, sogs_pubkey=config.sogs_pubkey, ed_privkey=ed_privkey, display_name=display_name)
 
         # Register the plugin to the DB. SOGS uses this DB to authenticate incoming requests as long
         # as they are signed by the x25519 key stored here. This table also contains permissions for
