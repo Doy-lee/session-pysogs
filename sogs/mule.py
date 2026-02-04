@@ -6,6 +6,7 @@ import dataclasses
 import typing
 import oxenmq
 import sogs.plugin
+from typing import Dict, List, Optional, Set, Union
 
 from oxenc import bt_deserialize, bt_serialize
 from datetime import timedelta
@@ -26,14 +27,14 @@ from . import db
 
 # Plugin identifier that is unique to the database for the SOGS. It is the row ID primary key from
 # SQL allocated to the plugin when it is registered to the DB in the `plugins` table.
-PluginID: typing.TypeAlias = int
+PluginID = int
 
 # This is the uwsgi "mule" that handles things not related to serving HTTP requests:
 # - it holds the oxenmq instance (with its own interface into sogs)
 # - it handles cleanup jobs (e.g. periodic deletions)
 
 # holds plugin_id -> plugin omq connection for connected plugins
-plugin_conns: dict[PluginID, oxenmq.ConnectionID] = {}
+plugin_conns: Dict[PluginID, oxenmq.ConnectionID] = {}
 
 @dataclasses.dataclass
 class PluginMetadata:
@@ -42,15 +43,15 @@ class PluginMetadata:
     # A plugin manifests itself as a user in the community. When a plugin identifies itself to the
     # SOGS (e.g. starts hello handshake), the user account for the plugin gets added as a
     # moderator/admin. This field is the user info for said user representing the plugin.
-    user: User | None = None
+    user: Optional[User] = None
 
 # holds oxenmq ConnectionID -> metadata (plugin_id, plugin session_id, etc.)
-plugin_conn_info: dict[oxenmq.ConnectionID, PluginMetadata] = {}
+plugin_conn_info: Dict[oxenmq.ConnectionID, PluginMetadata] = {}
 
 # holds command -> plugin_id for commands registered by plugins
 # key includes the prefix (default slash, may make configurable)
-plugin_pre_commands:  dict[str, set[PluginID]] = {}
-plugin_post_commands: dict[str, set[PluginID]] = {}
+plugin_pre_commands:  Dict[str, Set[PluginID]] = {}
+plugin_post_commands: Dict[str, Set[PluginID]] = {}
 
 @dataclasses.dataclass
 class PluginInfo:
@@ -120,7 +121,7 @@ def inproc_fail(connid, reason):
 
 @needs_app_context
 @log_exceptions
-def get_relevant_plugins(where_clause: str, room_id: int | None = None, room_token: str | None = None) -> dict[PluginID, PluginInfo] | None:
+def get_relevant_plugins(where_clause: str, room_id: Optional[int] = None, room_token: Optional[str] = None) -> Optional[Dict[PluginID, PluginInfo]]:
     """
     Retrieve plugins that match the given filter criteria from both global and room-specific contexts.
 
@@ -142,7 +143,7 @@ def get_relevant_plugins(where_clause: str, room_id: int | None = None, room_tok
         lookup fails. The required status is True if the plugin is marked as required in either
         the global or room-specific context (logical OR of both settings).
     """
-    result: dict[PluginID, PluginInfo] = {}
+    result: Dict[PluginID, PluginInfo] = {}
     with db.transaction():
         # Query global plugins that match the where_clause
         query_str = "SELECT id, name, required FROM plugins WHERE global = 1 AND " + where_clause
@@ -188,7 +189,7 @@ def message_request(m: oxenmq.Message):
 
     responded = False
     try:
-        request_raw: dict[bytes, bt_value]            = bt_deserialize(m.dataview()[0])
+        request_raw: Dict[bytes, bt_value]            = bt_deserialize(m.dataview()[0])
         request:     sogs.plugin.FilterMessageRequest = sogs.plugin.FilterMessageRequest.from_bencode(request_raw)
 
         filter_resp = plugin_filter_message(m.data(), room_id=request.room_id)
@@ -283,7 +284,7 @@ def message_edited(m: oxenmq.Message):
 
 @log_exceptions
 def plugin_filter_message(data: bytes, room_id: int) -> sogs.plugin.FilterResponse:
-    plugin_ids: dict[PluginID, PluginInfo] | None = get_relevant_plugins("approver = 1", room_id=room_id)
+    plugin_ids: Optional[Dict[PluginID, PluginInfo]] = get_relevant_plugins("approver = 1", room_id=room_id)
     if not plugin_ids:
         return sogs.plugin.FilterResponse.Accept
 
@@ -296,7 +297,7 @@ def plugin_filter_message(data: bytes, room_id: int) -> sogs.plugin.FilterRespon
             return sogs.plugin.FilterResponse.Reject
 
     # Submit the message to the plugins and collect the async handles
-    pending_requests: list[oxenmq.ResultFuture] = []
+    pending_requests: List[oxenmq.ResultFuture] = []
     for id in plugin_ids:
         pending_requests.append(o.omq.request_future(plugin_conns[id],
                                                      "plugin.filter_message",
@@ -307,7 +308,7 @@ def plugin_filter_message(data: bytes, room_id: int) -> sogs.plugin.FilterRespon
     silent = False
     for pending in pending_requests:
         try:
-            response: list[bytes] = pending.get()
+            response: List[bytes] = pending.get()
             if len(response) != 1:
                 return sogs.plugin.FilterResponse.Reject
 
@@ -485,8 +486,8 @@ def plugin_hello(m: oxenmq.Message):
     return bt_serialize("OK")
 
 
-def _require_plugin_conn_info(conn: oxenmq.ConnectionID, need_user: bool, msg_prefix: str) -> PluginMetadata | None:
-    result: PluginMetadata | None = None
+def _require_plugin_conn_info(conn: oxenmq.ConnectionID, need_user: bool, msg_prefix: str) -> Optional[PluginMetadata]:
+    result: Optional[PluginMetadata] = None
     if conn not in plugin_conn_info:
         app.logger.warning((f"{msg_prefix}: There is no plugin registered under the connection ID "
                              "{conn}. Has the plugin called `Plugin.say_hello()` yet, or check if "
@@ -509,15 +510,15 @@ def _require_plugin_conn_info(conn: oxenmq.ConnectionID, need_user: bool, msg_pr
 @needs_app_context
 @log_exceptions
 def plugin_register_command(m: oxenmq.Message, pre_command: bool):
-    metadata: PluginMetadata | None = _require_plugin_conn_info(m.conn, need_user=False, msg_prefix="Failed to register plugin")
+    metadata: Optional[PluginMetadata] = _require_plugin_conn_info(m.conn, need_user=False, msg_prefix="Failed to register plugin")
     if not metadata:
         return
 
     command_type:       str                      = "pre_command" if pre_command else "post_command"
-    commands_container: dict[str, set[PluginID]] = plugin_pre_commands if pre_command else plugin_post_commands
+    commands_container: Dict[str, Set[PluginID]] = plugin_pre_commands if pre_command else plugin_post_commands
 
-    req:      dict[bytes, oxenc.bt_value] = bt_deserialize(m.dataview()[0])
-    commands: list[bytes]                 = typing.cast(list[bytes], req[b'commands'])
+    req:      Dict[bytes, oxenc.bt_value] = bt_deserialize(m.dataview()[0])
+    commands: List[bytes]                 = typing.cast(List[bytes], req[b'commands'])
     app.logger.debug(f"register_{command_type}, commands: {commands}")
     for command in commands:
         command_utf8: str = ''
@@ -567,7 +568,7 @@ def plugin_set_user_room_permissions(m: oxenmq.Message):
     if not metadata:
         return
 
-    req_raw: dict[bytes, bt_value] = bt_deserialize(m.dataview()[0])
+    req_raw: Dict[bytes, bt_value] = bt_deserialize(m.dataview()[0])
     req                            = sogs.plugin.SetUserRoomPermissions.from_bencode(req_raw)
     try:
         if req.room_id is not None:
@@ -717,7 +718,7 @@ def plugin_insert_message(m: oxenmq.Message):
 @needs_app_context
 @log_exceptions
 def plugin_upload_file(m: oxenmq.Message):
-    metadata: PluginMetadata | None = _require_plugin_conn_info(m.conn, need_user=True, msg_prefix="Failed to upload file")
+    metadata: Optional[PluginMetadata] = _require_plugin_conn_info(m.conn, need_user=True, msg_prefix="Failed to upload file")
     if not metadata:
         return
 
@@ -833,7 +834,7 @@ def plugin_remove_reactions(m: oxenmq.Message):
 def on_reaction_posted(m: oxenmq.Message):
     msg_dict = bt_deserialize(m.dataview()[0])
     app.logger.warn(f"on_reaction_posted, reaction:\n{msg_dict}")
-    plugin_ids: dict[PluginID, PluginInfo] = get_relevant_plugins("subscribe = 1", room_id=msg_dict[b'room_id'])
+    plugin_ids: Dict[PluginID, PluginInfo] = get_relevant_plugins("subscribe = 1", room_id=msg_Dict[b'room_id'])
     for key in plugin_ids:
         if key in plugin_conns:
             plugin_info: PluginInfo = plugin_ids[key]

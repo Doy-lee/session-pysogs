@@ -10,13 +10,13 @@ import datetime
 import configparser
 
 from sogs.utils      import bt_value
-from typing          import Callable
+from typing          import Callable, Dict, List, Optional, Union
 from datetime        import timedelta
 from sogs.model.post import Post
 
 class LogFormatter(logging.Formatter):
     @typing_extensions.override
-    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+    def formatTime(self, record: logging.LogRecord, datefmt: Optional[str] = None) -> str:
         dt     = datetime.datetime.fromtimestamp(record.created)
         result = dt.strftime('%y-%m-%d %H:%M:%S.%f')[:-3]
         return result
@@ -35,15 +35,19 @@ log.addHandler(console_log_handler)
 # e.g.
 #   OMQ Session ID response => b"15aaaa.."       (66 bytes)
 #   `SessionID`             => b"\x15\xaa\xaa.." (33 bytes)
-SessionID:  typing.TypeAlias = bytes
-RoomToken:  typing.TypeAlias = bytes
-TimestampS: typing.TypeAlias = float
-MessageID:  typing.TypeAlias = int
+SessionID  = bytes
+RoomToken  = bytes
+TimestampS = float
+MessageID  = int
 
-class FilterResponse(enum.StrEnum):
+class FilterResponse(enum.Enum):
     Accept = "OK"
     Reject = "REJECT"
     Silent = "SILENT"
+
+    @typing_extensions.override
+    def __str__(self):
+        return self.value
 
 @dataclasses.dataclass
 class ReplySettings:
@@ -58,7 +62,7 @@ class ReplySettings:
         profile_name:  Display name for the reply
         public:        If True the reply is posted publicly; if False it is whispered to the user.
     """
-    reply_formats: list[str] = dataclasses.field(default_factory=list)
+    reply_formats: List[str] = dataclasses.field(default_factory=list)
     profile_name:  str       = 'SOGS'
     public:        bool      = False
 
@@ -71,7 +75,7 @@ class RoomReadRequest:
     user_id:    int
 
     @classmethod
-    def from_bencode(cls, src: dict[bytes, bt_value]):
+    def from_bencode(cls, src: Dict[bytes, bt_value]):
         result = RoomReadRequest(room_id     = typing.cast(int, src[b'room_id']),
                                  room_name  = typing.cast(bytes, src[b'room_name']).decode('utf-8'),
                                  room_token = typing.cast(bytes, src[b'room_token']),
@@ -95,7 +99,7 @@ class FilterMessageRequest:
     whisper_mods: bool
 
     @classmethod
-    def from_bencode(cls, src: dict[bytes, bt_value]):
+    def from_bencode(cls, src: Dict[bytes, bt_value]):
         result = FilterMessageRequest(alt_id       = bytes.fromhex(typing.cast(bytes, src[b'alt_id']).decode('utf-8')),
                                       data_size    = typing.cast(int,   src[b'data_size']),
                                       filtered     = typing.cast(bool,  src[b'filtered']),
@@ -110,7 +114,7 @@ class FilterMessageRequest:
                                       whisper_mods = typing.cast(bool,  src[b'whisper_mods']))
         return result
 
-    def to_bencode(self) -> dict[bytes, bt_value]:
+    def to_bencode(self) -> Dict[bytes, bt_value]:
         return {b'alt_id':        self.alt_id,
                 b'data_size':     self.data_size,
                 b'filtered':      int(self.filtered),
@@ -133,17 +137,17 @@ class SetUserRoomPermissionsResponse(enum.Enum):
 
 @dataclasses.dataclass
 class SetUserRoomPermissions:
-    room_id:         int       | None = None
-    room_token:      bytes     | None = None
-    user_id:         int       | None = None
-    user_session_id: SessionID | None = None
-    accessible:      bool      | None = None
-    read:            bool      | None = None
-    write:           bool      | None = None
-    in_s:            int       | None = None
+    room_id:         Optional[int]       = None
+    room_token:      Optional[bytes]     = None
+    user_id:         Optional[int]       = None
+    user_session_id: Optional[SessionID] = None
+    accessible:      Optional[bool]      = None
+    read:            Optional[bool]      = None
+    write:           Optional[bool]      = None
+    in_s:            Optional[int]       = None
 
     @classmethod
-    def from_bencode(cls, src: dict[bytes, bt_value]):
+    def from_bencode(cls, src: Dict[bytes, bt_value]):
         result = SetUserRoomPermissions()
         if b'room_id' in src:
             result.room_id = typing.cast(int, src[b'room_id'])
@@ -166,8 +170,8 @@ class SetUserRoomPermissions:
             result.in_s = typing.cast(int, src[b'in'])
         return result
 
-    def to_bencode(self) -> dict[bytes, bt_value]:
-        result: dict[bytes, bt_value] = {}
+    def to_bencode(self) -> Dict[bytes, bt_value]:
+        result: Dict[bytes, bt_value] = {}
 
         if self.room_id is not None:
             result[b'room_id'] = self.room_id
@@ -208,10 +212,10 @@ class Plugin:
     # Default values
     running:              bool                                                                 = False
     last_post_time:       int                                                                  = 0
-    pre_slash_handlers:   dict[str, typing.Callable[[dict[bytes, bt_value], list[str]], bool]] = dataclasses.field(default_factory=dict)
-    post_slash_handlers:  dict[str, typing.Callable[[dict[bytes, bt_value], list[str]], bool]] = dataclasses.field(default_factory=dict)
-    request_read_handler: typing.Callable[[RoomReadRequest], bt_value] | None                  = None
-    conn:                 oxenmq.ConnectionID | None                                           = None
+    pre_slash_handlers:   Dict[str, typing.Callable[[Dict[bytes, bt_value], List[str]], bool]] = dataclasses.field(default_factory=dict)
+    post_slash_handlers:  Dict[str, typing.Callable[[Dict[bytes, bt_value], List[str]], bool]] = dataclasses.field(default_factory=dict)
+    request_read_handler: Optional[typing.Callable[[RoomReadRequest], bt_value]]               = None
+    conn:                 Optional[oxenmq.ConnectionID]                                        = None
 
     # Post initialised
     ed_pubkey:            bytes               = dataclasses.field(init=False) # 32 byte ed25519 public key
@@ -230,7 +234,7 @@ class Plugin:
 
         # Setup and load config file from disk
         parsed_ini            = configparser.ConfigParser(strict=False)
-        files_read: list[str] = parsed_ini.read(ini_path)
+        files_read: List[str] = parsed_ini.read(ini_path)
 
         if len(files_read) != 1:
             log.warning(f"Plugin .ini config file does not exist, terminating plugin. File was: {ini_path}")
@@ -238,7 +242,7 @@ class Plugin:
 
         # Load fields common to all plugins
         sogs_address:    str        = parsed_ini.get('plugin', 'sogs_address',    fallback=sogs_config.OMQ_LISTEN)
-        sogs_pubkey_hex: str | None = parsed_ini.get('plugin', 'sogs_pubkey_hex', fallback=None)
+        sogs_pubkey_hex: Optional[str] = parsed_ini.get('plugin', 'sogs_pubkey_hex', fallback=None)
 
         # Convert pubkey to bytes
         if not sogs_pubkey_hex:
@@ -315,7 +319,7 @@ class Plugin:
         # NOTE: Subscribe to the following hooks on SOGS. SOGs will call invoke this plugin via
         # OxenMQ when the commands are triggered.
         if len(self.pre_slash_handlers) or self.request_read_handler:
-            pre_commands: list[str] = list(self.pre_slash_handlers.keys())
+            pre_commands: List[str] = list(self.pre_slash_handlers.keys())
             if self.request_read_handler:
                 pre_commands.append('/request_read')
 
@@ -323,7 +327,7 @@ class Plugin:
             self.omq.send(conn, "plugin.register_pre_commands", oxenc.bt_serialize({b'commands': pre_commands}))
 
         if len(self.post_slash_handlers):
-            post_commands: list[str] = list(self.post_slash_handlers.keys())
+            post_commands: List[str] = list(self.post_slash_handlers.keys())
 
             print(f"Registering post-commands: {post_commands}")
             self.omq.send(conn, "plugin.register_post_commands", oxenc.bt_serialize({b'commands': list(post_commands)}))
@@ -409,7 +413,7 @@ class Plugin:
     def request_read(self, m: oxenmq.Message):
         # Example
         #  {b'room_id': 1, b'room_name': b'foobar', b'room_token': b'foobar', b'session_id': b'1500784b7c2096f6ed811b25c53a63e551954ee6778c7ae4437cb01c4b01fb4a09', b'user_id': 3}
-        req       = typing.cast(dict[bytes, bt_value], oxenc.bt_deserialize(m.dataview()[0]))
+        req       = typing.cast(Dict[bytes, bt_value], oxenc.bt_deserialize(m.dataview()[0]))
         room_info = RoomReadRequest.from_bencode(req)
 
         # this should not be called by sogs if we didn't register it...
@@ -422,7 +426,7 @@ class Plugin:
             print(f"Exception in request_read handler: {traceback.format_exc()}")
         return oxenc.bt_serialize(True)
 
-    def register_command(self, command: str, handler: typing.Callable[[dict[bytes, bt_value], list[str]], bool], pre_command: bool):
+    def register_command(self, command: str, handler: typing.Callable[[Dict[bytes, bt_value], List[str]], bool], pre_command: bool):
         """
         Registers a slash command with sogs.  `handler` will be invoked with the arguments
         from sogs as a dictionary, including "command": command.
@@ -443,7 +447,7 @@ class Plugin:
             command_type = "pre_commands" if pre_command else "post_commands"
             self.omq.send(self.conn, f"plugin.register_{command_type}", oxenc.bt_serialize({b"commands": [command]}))
 
-    def register_pre_command(self, command: str, handler: typing.Callable[[dict[bytes, bt_value], list[str]], bool]):
+    def register_pre_command(self, command: str, handler: typing.Callable[[Dict[bytes, bt_value], List[str]], bool]):
         """
         Register a handler for slash commands that runs BEFORE the message is inserted.
 
@@ -453,7 +457,7 @@ class Plugin:
         """
         self.register_command(command, handler, True)
 
-    def register_post_command(self, command: str, handler: typing.Callable[[dict[bytes, bt_value], list[str]], bool]):
+    def register_post_command(self, command: str, handler: typing.Callable[[Dict[bytes, bt_value], List[str]], bool]):
         """
         Register a handler for slash commands that runs AFTER the message is inserted.
 
@@ -465,7 +469,7 @@ class Plugin:
 
     def filter_message(self, m: oxenmq.Message):
         try:
-            req_raw: dict[bytes, bt_value] = oxenc.bt_deserialize(m.dataview()[0])
+            req_raw: Dict[bytes, bt_value] = oxenc.bt_deserialize(m.dataview()[0])
             req                            = FilterMessageRequest.from_bencode(req_raw)
 
             log.debug(f"Filter message received: {req_raw}")
@@ -525,12 +529,12 @@ class Plugin:
 
     def set_user_room_permissions(
         self,
-        room:         bytes     | int | None = None,
-        user:         SessionID | int | None = None,
-        sec_from_now: int       | None       = None,
-        accessible:   bool      | None       = None,
-        read:         bool      | None       = None,
-        write:        bool      | None       = None,
+        room:         Optional[Union[bytes, int]]  = None,
+        user:         Optional[Union[SessionID, int]] = None,
+        sec_from_now: Optional[int]               = None,
+        accessible:   Optional[bool]              = None,
+        read:         Optional[bool]              = None,
+        write:        Optional[bool]              = None,
     ) -> SetUserRoomPermissionsResponse:
         """Set the permission(s) of the user for the room
 
@@ -587,7 +591,7 @@ class Plugin:
         result                         = SetUserRoomPermissionsResponse.Error
         conn:      oxenmq.ConnectionID = self._require_conn_established();
         future:    oxenmq.ResultFuture = self.omq.request_future(conn, "plugin.set_user_room_permissions", oxenc.bt_serialize(req.to_bencode()), request_timeout=timedelta(seconds=5))
-        resp_list: list[bytes]         = future.get()
+        resp_list: List[bytes]         = future.get()
         resp:      bytes               = resp_list[0]
         assert len(resp_list) == 1
         if resp == b"OK":
@@ -598,7 +602,7 @@ class Plugin:
             result = SetUserRoomPermissionsResponse.NoSuchUser
         return result
 
-    def delete_messages(self, msg_ids: list[MessageID]) -> bool:
+    def delete_messages(self, msg_ids: List[MessageID]) -> bool:
         """Request SOGs to delete the specified message(s). The message(s) must have been created by
         this plugin.
         """
@@ -606,10 +610,10 @@ class Plugin:
         if len(msg_ids):
             conn:      oxenmq.ConnectionID = self._require_conn_established();
             future:    oxenmq.ResultFuture = self.omq.request_future(conn, "plugin.delete_message", oxenc.bt_serialize({b'msg_ids': msg_ids}))
-            resp_list: list[bytes]         = future.get()
+            resp_list: List[bytes]         = future.get()
             assert len(resp_list) == 1
 
-            resp: dict[bytes, bt_value] = oxenc.bt_deserialize(resp_list[0])
+            resp: Dict[bytes, bt_value] = oxenc.bt_deserialize(resp_list[0])
             if b'status' in resp and resp[b'status'] == b'OK':
                 result = True
         return result
@@ -622,9 +626,9 @@ class Plugin:
                      room_token:           bytes,
                      body:                 str,
                      *,
-                     whisper_target:       SessionID | None = None,
+                     whisper_target:       Optional[SessionID] = None,
                      no_plugins:           bool = False,
-                     attachments_metadata: list[dict[str, typing.Any]] | None = None) -> MessageID | None:
+                     attachments_metadata: Optional[List[Dict[str, typing.Any]]] = None) -> Optional[MessageID]:
         from sogs import session_pb2 as protobuf
         from time import time
         self.last_post_time = max(self.last_post_time + 1, int(time() * 1000))
@@ -634,7 +638,7 @@ class Plugin:
         content.dataMessage.timestamp           = self.last_post_time
         content.dataMessage.profile.displayName = self.display_name
 
-        attachment_ids: list[int] = []
+        attachment_ids: List[int] = []
         if attachments_metadata:
             for attachment_meta in attachments_metadata:
                 assert "id" in attachment_meta
@@ -671,7 +675,7 @@ class Plugin:
         # FIXME: Use 25-blinding when Session is ready and deprecate 15-blinded keys
         from session_util.blinding import blind15_sign
         sig:    bytes            = blind15_sign(self.ed_privkey, self.sogs_pubkey, content)
-        result: MessageID | None = self.inject_message(room_token, self.session_id, content, sig, whisper_target=whisper_target, no_plugins=no_plugins, attachment_ids=attachment_ids)
+        result: Optional[MessageID] = self.inject_message(room_token, self.session_id, content, sig, whisper_target=whisper_target, no_plugins=no_plugins, attachment_ids=attachment_ids)
         return result
 
     # This can be used either to post a message from the plugin *or* to re-inject a now-approved user message
@@ -684,12 +688,10 @@ class Plugin:
         message:        bytes,
         sig:            bytes,
         *,
-        whisper_target: SessionID | None = None,
-        whisper_mods:   bool             = False,
-        no_plugins:     bool             = False,
-        attachment_ids: list[int] | None = None,
-    ) -> MessageID | None:
-        req: dict[bytes, typing.Any] = {
+        whisper_target: Optional[SessionID] = None,
+        attachment_ids: Optional[List[int]] = None,
+    ) -> Optional[MessageID]:
+        req: Dict[bytes, typing.Any] = {
             b"room_token":   room_token,
             b"session_id":   session_id.hex(),
             b"message":      message,
@@ -720,7 +722,7 @@ class Plugin:
         print(f"Message injected, id: {msg_id}")
         return msg_id
 
-    def post_reactions(self, room_token: bytes, msg_id: MessageID, *reactions: str) -> dict[bytes, bt_value]:
+    def post_reactions(self, room_token: bytes, msg_id: MessageID, *reactions: str) -> Dict[bytes, bt_value]:
         req = {b"room_token": room_token, b"msg_id": msg_id, b"reactions": reactions}
         print(f"post_reactions request: {req}")
         return oxenc.bt_deserialize(
@@ -744,7 +746,7 @@ class Plugin:
             ).get()[0]
         )
 
-    def upload_file(self, file_path: str, room_token: bytes, display_filename: str | None = None):
+    def upload_file(self, file_path: str, room_token: bytes, display_filename: Optional[str] = None):
         try:
             from os import path
             filename = display_filename if display_filename else path.basename(file_path)

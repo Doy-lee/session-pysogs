@@ -82,6 +82,7 @@ from time               import time
 from sogs.plugin        import *
 from concurrent.futures import ThreadPoolExecutor
 from PIL                import Image,  ImageDraw, ImageFont
+from typing             import Dict, List, Optional, Tuple
 
 class ShapeType(enum.Enum):
     Rectangle = 0
@@ -92,7 +93,7 @@ class ShapeType(enum.Enum):
     Octagon   = 5
 
 # List of default colours (in RGB) used to draw the background shapes in the CAPTCHAs
-DEFAULT_COLOUR_SET: list[int] = [
+DEFAULT_COLOUR_SET: List[int] = [
     0x31F196,
     0x57C9FA,
     0xC993FF,
@@ -103,7 +104,7 @@ DEFAULT_COLOUR_SET: list[int] = [
 ]
 assert len(DEFAULT_COLOUR_SET) >= len(ShapeType)
 
-EMOJI_LIST: list[str] = [
+EMOJI_LIST: List[str] = [
     "\U0001F602",           # 😂
     "\U00002764\U0000FE0F", # ❤️
     "\U0001F923",           # 🤣
@@ -419,8 +420,7 @@ class Captcha:
 class EmojiCaptcha(Captcha):
     """Generates emoji-based CAPTCHAs with geometric background shapes."""
 
-    @typing.override
-    async def generate_captcha(self, executor: ThreadPoolExecutor, width: int, height: int, font: ImageFont.FreeTypeFont, color_set: list[int] = DEFAULT_COLOUR_SET):
+    async def generate_captcha(self, executor: ThreadPoolExecutor, width: int, height: int, font: ImageFont.FreeTypeFont, color_set: List[int] = DEFAULT_COLOUR_SET):
         assert len(color_set) >= len(ShapeType), \
             "The number of colours to select from must be greater the number of shapes we that are to be drawn"
 
@@ -437,39 +437,38 @@ class EmojiCaptcha(Captcha):
             y1    = random.randint(0, height - min_size_y)
             x2    = x1 + random.randint(min_size_x, min(width - x1, int(width / 2)))
             y2    = y1 + random.randint(min_size_y, min(height - y1, int(height / 2)))
-            match shape_type:
-                case ShapeType.Rectangle:
-                    draw.rectangle([x1, y1, x2, y2], fill=color)
-                case ShapeType.Hexagon:
-                    draw.regular_polygon(
-                        [(x1 + x2) // 2, (y1 + y2) // 2, min(x2 - x1, y2 - y1) // 2],
-                        6,
-                        fill=color)
-                case ShapeType.Circle:
-                    # Ensure the bounding box is square to draw a perfect circle
-                    side_length = min(x2 - x1, y2 - y1)
-                    draw.ellipse([x1, y1, x1 + side_length, y1 + side_length], fill=color)
-                case ShapeType.Triangle:
-                    draw.regular_polygon(
-                        [(x1 + x2) // 2, (y1 + y2) // 2, min(x2 - x1, y2 - y1) // 2],
-                        3,
-                        fill=color)
-                case ShapeType.Star:
-                    # Parameters for star shape
-                    center_x                          = (x1 + x2) // 2
-                    center_y                          = (y1 + y2) // 2
-                    radius                            = min(x2 - x1, y2 - y1) // 2
-                    points: list[tuple[float, float]] = []
-                    for i in range(10):  # 5 points for a star, each point needs 2 coordinates (outer and inner)
-                        angle = i * (2 * 3.14159 / 10)
-                        r     = radius if i % 2 == 0 else radius // 2
-                        points.append((center_x + r * math.cos(angle), center_y + r * math.sin(angle)))
-                    draw.polygon(points, fill=color)
-                case ShapeType.Octagon:
-                    draw.regular_polygon(
-                        [(x1 + x2) // 2, (y1 + y2) // 2, min(x2 - x1, y2 - y1) // 2],
-                        8,
-                        fill=color)
+            if shape_type == ShapeType.Rectangle:
+                draw.rectangle([x1, y1, x2, y2], fill=color)
+            elif shape_type == ShapeType.Hexagon:
+                draw.regular_polygon(
+                    [(x1 + x2) // 2, (y1 + y2) // 2, min(x2 - x1, y2 - y1) // 2],
+                    6,
+                    fill=color)
+            elif shape_type == ShapeType.Circle:
+                # Ensure the bounding box is square to draw a perfect circle
+                side_length = min(x2 - x1, y2 - y1)
+                draw.ellipse([x1, y1, x1 + side_length, y1 + side_length], fill=color)
+            elif shape_type == ShapeType.Triangle:
+                draw.regular_polygon(
+                    [(x1 + x2) // 2, (y1 + y2) // 2, min(x2 - x1, y2 - y1) // 2],
+                    3,
+                    fill=color)
+            elif shape_type == ShapeType.Star:
+                # Parameters for star shape
+                center_x                          = (x1 + x2) // 2
+                center_y                          = (y1 + y2) // 2
+                radius                            = min(x2 - x1, y2 - y1) // 2
+                points: List[Tuple[float, float]] = []
+                for i in range(10):  # 5 points for a star, each point needs 2 coordinates (outer and inner)
+                    angle = i * (2 * 3.14159 / 10)
+                    r     = radius if i % 2 == 0 else radius // 2
+                    points.append((center_x + r * math.cos(angle), center_y + r * math.sin(angle)))
+                draw.polygon(points, fill=color)
+            elif shape_type == ShapeType.Octagon:
+                draw.regular_polygon(
+                    [(x1 + x2) // 2, (y1 + y2) // 2, min(x2 - x1, y2 - y1) // 2],
+                    8,
+                    fill=color)
 
         emoji_margin: float = int(font.size * 0.5) + font.size
         emoji_x:      float = float(random.randint(0, int(width - emoji_margin)))
@@ -485,7 +484,7 @@ class CaptchaManager:
     """Manages a pool of pre-generated CAPTCHAs for efficient distribution."""
     data_dir:     str           = "./.sogs/plugins/captcha"
     batch_size:   int           = 32
-    captcha_list: list[Captcha] = dataclasses.field(default_factory=list)
+    captcha_list: List[Captcha] = dataclasses.field(default_factory=list)
     font_path:    str           = os.path.dirname(os.path.abspath(__file__)) + '/NotoColorEmoji.ttf'
     font_size:    int           = 109 # Suitable font size specifically for NotoColorEmoji
     width:        int           = 400
@@ -537,27 +536,27 @@ class UserCaptchaState:
     Tracks all state needed to manage a user's progress through the CAPTCHA flow.
     Stored in nested dict: users[session_id][room_token] -> UserCaptchaState
     """
-    refresh_state:                        RefreshState     = RefreshState.Nil
-    refresh_msg_id:                       MessageID | None = None
+    refresh_state:                        RefreshState        = RefreshState.Nil
+    refresh_msg_id:                       Optional[MessageID] = None
 
-    captcha_state:                        CaptchaState     = CaptchaState.Nil
-    captcha_failed_next_attempt_at_ts:    TimestampS       = 0.0  # Retry timeout after failure
-    captcha_attempts:                     int              = 0    # Count of used CAPTCHAs
-    captcha_limit_msg_shown:              bool             = False
+    captcha_state:                        CaptchaState        = CaptchaState.Nil
+    captcha_failed_next_attempt_at_ts:    TimestampS          = 0.0  # Retry timeout after failure
+    captcha_attempts:                     int                 = 0    # Count of used CAPTCHAs
+    captcha_limit_msg_shown:              bool                = False
 
-    captcha_solved_grant_access_at_ts:    TimestampS       = 0.0
-    captcha_solved_welcome_msg_shown:     bool             = False
-    captcha_solved_grant_access:          bool             = False
+    captcha_solved_grant_access_at_ts:    TimestampS          = 0.0
+    captcha_solved_welcome_msg_shown:     bool                = False
+    captcha_solved_grant_access:          bool                = False
 
-    posted_captcha:                       Captcha | None   = None
-    posted_captcha_timestamp:             TimestampS       = 0.0
-    posted_captcha_msg_id:                MessageID | None = None
-    posted_captcha_refresh_emoji_applied: bool             = False
+    posted_captcha:                       Optional[Captcha]   = None
+    posted_captcha_timestamp:             TimestampS          = 0.0
+    posted_captcha_msg_id:                Optional[MessageID] = None
+    posted_captcha_refresh_emoji_applied: bool                = False
 
     # Reliable message deletion queues - messages retried until successful deletion
-    msgs_to_delete_on_tick:               list[MessageID]  = dataclasses.field(default_factory=list)
-    reactions_to_delete_on_tick:          list[MessageID]  = dataclasses.field(default_factory=list)
-    msgs_to_delete_on_ready:              list[MessageID]  = dataclasses.field(default_factory=list)
+    msgs_to_delete_on_tick:               List[MessageID]     = dataclasses.field(default_factory=list)
+    reactions_to_delete_on_tick:          List[MessageID]     = dataclasses.field(default_factory=list)
+    msgs_to_delete_on_ready:              List[MessageID]     = dataclasses.field(default_factory=list)
 
     def clear_posted_captcha(self):
         """Reset current CAPTCHA state after failure or consumption."""
@@ -571,7 +570,7 @@ class EmojiCaptchaPlugin(Plugin):
     """SOGS Plugin implementing emoji CAPTCHA verification for room access"""
     attempt_limit_str: typing.ClassVar[str]                               = "You have hit the attempt limit, solve the CAPTCHA to proceed."
     refresh_emoji:     str                                                = "\U0001F504" # Unicode refresh symbol emoji
-    users:             dict[SessionID, dict[RoomToken, UserCaptchaState]] = dataclasses.field(default_factory=dict)
+    users:             Dict[SessionID, Dict[RoomToken, UserCaptchaState]] = dataclasses.field(default_factory=dict)
 
     retry_limit:       int                                                = 3   # Max CAPTCHA attempts per user/room
     retry_timeout_s:   int                                                = 60  # Seconds to wait after failed attempt
@@ -588,7 +587,7 @@ class EmojiCaptchaPlugin(Plugin):
         log.info("Plugin initialised: refresh {}s; retry {}s; write {}s; captcha limit {}"
                  .format(self.refresh_timeout_s, self.retry_timeout_s, self.write_timeout_s, self.retry_limit))
 
-    def get_user(self, session_id: bytes, room_token: bytes) -> UserCaptchaState | None:
+    def get_user(self, session_id: bytes, room_token: bytes) -> Optional[UserCaptchaState]:
         result = None
         if session_id in self.users and room_token in self.users[session_id]:
             result = self.users[session_id][room_token]
@@ -620,7 +619,7 @@ class EmojiCaptchaPlugin(Plugin):
     def _ensure_refresh_emoji_on_captcha(self, room_token: bytes, user: UserCaptchaState, msg_id: MessageID):
         captchas_remaining: int  = self.retry_limit - user.captcha_attempts
         if not user.posted_captcha_refresh_emoji_applied and captchas_remaining > 1:
-            react_resp: dict[bytes, bt_value] = self.post_reactions(room_token, msg_id, self.refresh_emoji)
+            react_resp: Dict[bytes, bt_value] = self.post_reactions(room_token, msg_id, self.refresh_emoji)
             if b'status' in react_resp and react_resp[b'status'] == b'OK':
                 user.posted_captcha_refresh_emoji_applied = True
 
@@ -775,7 +774,7 @@ class EmojiCaptchaPlugin(Plugin):
         user.posted_captcha           = self.captcha_manager.refresh();
         user.posted_captcha_timestamp = time()
 
-        captcha_attachment_metadata: dict[str, typing.Any] | None = self.upload_file(user.posted_captcha.file_path, room_token)
+        captcha_attachment_metadata: Optional[Dict[str, typing.Any]] = self.upload_file(user.posted_captcha.file_path, room_token)
         if not captcha_attachment_metadata:
             log.error(f"Failed to create a CAPTCHA for user 0x{session_id.hex()}: CAPTCHA file upload failed")
             user.clear_posted_captcha()
@@ -791,7 +790,7 @@ class EmojiCaptchaPlugin(Plugin):
         else:
             body += EmojiCaptchaPlugin.attempt_limit_str
 
-        msg_id: MessageID | None = self.post_message(room_token=room_token, body=body, whisper_target=session_id, no_plugins=True, attachments_metadata=[captcha_attachment_metadata])
+        msg_id: Optional[MessageID] = self.post_message(room_token=room_token, body=body, whisper_target=session_id, no_plugins=True, attachments_metadata=[captcha_attachment_metadata])
         if not msg_id:
             log.error(f"Failed to create a CAPTCHA for user 0x{session_id.hex()}: Message post failed")
             user.clear_posted_captcha()
@@ -803,7 +802,6 @@ class EmojiCaptchaPlugin(Plugin):
 
         return oxenc.bt_serialize("OK")
 
-    @typing.override
     def reaction_posted(self, m: oxenmq.Message):
         """Process reactions on CAPTCHA messages (answer, refresh, or incorrect)."""
 
@@ -812,7 +810,7 @@ class EmojiCaptchaPlugin(Plugin):
         #   b'room_id': 1, b'room_name': b'foobar2', b'room_token': b'foobar2',
         #   b'session_id': b'1500784b7c2096f6ed811b25c53a63e551954ee6778c7ae4437cb01c4b01fb4a09',
         #   b'user_id': 3}
-        req: dict[bytes, bt_value] = oxenc.bt_deserialize(m.dataview()[0])
+        req: Dict[bytes, bt_value] = oxenc.bt_deserialize(m.dataview()[0])
 
         msg_id            = typing.cast(MessageID, req[b'msg_id'])
         session_id: bytes = bytes.fromhex(typing.cast(bytes, req[b'session_id']).decode('utf-8'))
@@ -820,7 +818,7 @@ class EmojiCaptchaPlugin(Plugin):
         room_name:  str   = typing.cast(bytes, req[b'room_name']).decode('utf-8')
         reaction:   str   = typing.cast(bytes, req[b'reaction']).decode('utf-8')
 
-        user: UserCaptchaState | None = self.get_user(session_id, room_token)
+        user: Optional[UserCaptchaState] = self.get_user(session_id, room_token)
         if not user:
             log.warning(f'Reaction {reaction} from unknown user 0x{session_id.hex()} in room {room_token}')
             return

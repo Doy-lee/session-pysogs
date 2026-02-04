@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, overload
+from typing import Any, Dict, List, overload, Union
 
 @overload
 def bt_serialize(val: int) -> bytes: ...
@@ -8,9 +8,9 @@ def bt_serialize(val: bytes) -> bytes: ...
 @overload
 def bt_serialize(val: str) -> bytes: ...
 @overload
-def bt_serialize(val: list[Any]) -> bytes: ...
+def bt_serialize(val: List[Any]) -> bytes: ...
 @overload
-def bt_serialize(val: dict[bytes, Any]) -> bytes: ...
+def bt_serialize(val: Dict[bytes, Any]) -> bytes: ...
 
 def bt_serialize(val: Any) -> bytes:
     """Serialize a value to bencode format (bytes).
@@ -31,7 +31,7 @@ def bt_serialize(val: Any) -> bytes:
     """
     ...
 
-def bt_deserialize(val: bytes | bytearray | memoryview) -> Any:
+def bt_deserialize(val: Union[bytes, bytearray, memoryview]) -> Any:
     """Deserialize a bencoded value from bytes-like data.
 
     Accepts any buffer protocol object (bytes, bytearray, memoryview, etc.).
@@ -40,8 +40,8 @@ def bt_deserialize(val: bytes | bytearray | memoryview) -> Any:
         One of:
         - int
         - bytes            (all string-like values come out as bytes)
-        - list[...]        (list of any of the possible return types here, e.g. recursive)
-        - dict[bytes, ...] (key are always bytes and maps to any of the possible return types here e.g. recursive)
+        - List[...]        (list of any of the possible return types here, e.g. recursive)
+        - Dict[bytes, ...] (key are always bytes and maps to any of the possible return types here e.g. recursive)
 
     Raises:
         ValueError: If the input is empty or invalid bencode.

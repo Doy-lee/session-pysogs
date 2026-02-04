@@ -14,19 +14,19 @@ class SlashTestPlugin(Plugin):
         self.register_post_command('/test_handled', self.handle_post_slash)
         self.register_pre_command('/get_file', self.handle_get_file)
 
-    def handle_pre_slash(self, request: dict[bytes, bt_value], command_parts: list[str]) -> bool:
+    def handle_pre_slash(self, request: Dict[bytes, bt_value], command_parts: List[str]) -> bool:
         print(f"slash pre-insertion command: {json.dumps(request, indent=1)} {command_parts}")
         if command_parts[0] == '/test_handled':
             return False
         return True
 
-    def handle_post_slash(self, request: dict[bytes, bt_value], command_parts: list[str]) -> bool:
+    def handle_post_slash(self, request: Dict[bytes, bt_value], command_parts: List[str]) -> bool:
         print(f"slash post-insertion command: {json.dumps(request, indent=1)} {command_parts}")
         if command_parts[0] == '/test_handled':
             return False
         return True
 
-    def handle_get_file(self, request: dict[bytes, bt_value], command_parts: list[str]) -> bool:
+    def handle_get_file(self, request: Dict[bytes, bt_value], command_parts: List[str]) -> bool:
         print(f"/get_file pre-insertion command: {command_parts}")
 
         room_token = typing.cast(bytes, request[b'room_token'])

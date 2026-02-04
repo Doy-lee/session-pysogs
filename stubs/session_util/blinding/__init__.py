@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import overload
+from typing import overload, Union
 import typing
 
 class Keypair:
@@ -13,7 +13,7 @@ class Keypair:
 def blind25_id(session_id: str, server_pk: str, /) -> str: ...
 @overload
 def blind25_id(session_id: bytes, server_pk: bytes, /) -> bytes: ...
-def blind25_id(session_id: str | bytes, server_pk: str | bytes, /) -> str | bytes:
+def blind25_id(session_id: Union[str, bytes], server_pk: Union[str, bytes], /) -> Union[str, bytes]:
     """Compute a blinded session ID using 25xxx-style Community pubkey blinding.
 
     Takes the (unblinded) Session ID and server pubkey; returns the blinded ID.
@@ -59,7 +59,7 @@ def blind25_key_pair(ed25519_seckey: bytes, server_pubkey: bytes, /) -> Keypair:
 def blind15_sign(ed25519_seckey: bytes, server_pubkey: str, message: bytes, /) -> bytes: ...
 @overload
 def blind15_sign(ed25519_seckey: bytes, server_pubkey: bytes, message: bytes, /) -> bytes: ...
-def blind15_sign(ed25519_seckey: bytes, server_pubkey: str | bytes, message: bytes, /) -> bytes:
+def blind15_sign(ed25519_seckey: bytes, server_pubkey: Union[str, bytes], message: bytes, /) -> bytes:
     """Sign a message verifiable with the blinded 15xxx pubkey version of a Session ID.
 
     The signature is a standard Ed25519 signature — verifiable using the blinded pubkey
@@ -79,7 +79,7 @@ def blind15_sign(ed25519_seckey: bytes, server_pubkey: str | bytes, message: byt
 def blind25_sign(ed25519_seckey: bytes, server_pubkey: str, message: bytes, /) -> bytes: ...
 @overload
 def blind25_sign(ed25519_seckey: bytes, server_pubkey: bytes, message: bytes, /) -> bytes: ...
-def blind25_sign(ed25519_seckey: bytes, server_pubkey: str | bytes, message: bytes, /) -> bytes:
+def blind25_sign(ed25519_seckey: bytes, server_pubkey: Union[str, bytes], message: bytes, /) -> bytes:
     """Sign a message verifiable with the blinded 25xxx pubkey version of a Session ID.
 
     The signature is a standard Ed25519 signature — verifiable using the blinded pubkey

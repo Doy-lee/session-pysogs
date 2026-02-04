@@ -1,4 +1,5 @@
 import re
+from typing import Optional
 from sogs.plugin import Plugin, ReplySettings, FilterResponse
 from sogs.model.post import Post
 
@@ -102,7 +103,7 @@ class SogsFilterPlugin(Plugin):
 
         print(self.room_settings)
 
-    def get_reply_settings(self, room_token, *args, filter_type='profanity', filter_lang=None) -> ReplySettings | None:
+    def get_reply_settings(self, room_token, *args, filter_type='profanity', filter_lang=None) -> Optional[ReplySettings]:
         if not self.config.FILTER_SETTINGS:
             return None
 

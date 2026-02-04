@@ -3,7 +3,9 @@ import typing
 import oxenc
 import oxenmq
 from time import time
+from typing import Optional
 from sogs.plugin import Plugin, bt_value, RoomReadRequest, SessionID, RoomToken, MessageID
+from typing import Dict
 
 @dataclasses.dataclass
 class PermissionPlugin(Plugin):
@@ -11,8 +13,8 @@ class PermissionPlugin(Plugin):
     no_reaction:      str                                         = "\N{THUMBS DOWN SIGN}"
     retry_timeout:    int                                         = 120
     write_timeout:    int                                         = 120
-    pending_requests: dict[SessionID, dict[RoomToken, MessageID]] = dataclasses.field(default_factory=dict)
-    retry_jail:       dict[SessionID, float]                      = dataclasses.field(default_factory=dict)
+    pending_requests: Dict[SessionID, Dict[RoomToken, MessageID]] = dataclasses.field(default_factory=dict)
+    retry_jail:       Dict[SessionID, float]                      = dataclasses.field(default_factory=dict)
 
     def __post_init__(self):
         super().__post_init__()
@@ -30,14 +32,14 @@ class PermissionPlugin(Plugin):
         if session_id in self.pending_requests and room_token in self.pending_requests[session_id]:
             return oxenc.bt_serialize("OK")
         print(f"request_read from {session_id.hex()}, id={req.user_id}, room={room_token}")
-        msg_id: MessageID | None = self.post_message(
+        msg_id: Optional[MessageID] = self.post_message(
             room_token,
             "Please react with a thumbs up to agree to the room rules.",
             whisper_target=session_id,
             no_plugins=True,
         )
         if msg_id:
-            react_resp: dict[bytes, bt_value] = self.post_reactions(
+            react_resp: Dict[bytes, bt_value] = self.post_reactions(
                 room_token, msg_id, self.yes_reaction, self.no_reaction
             )
             if b'error' in react_resp:
@@ -49,9 +51,8 @@ class PermissionPlugin(Plugin):
 
         return oxenc.bt_serialize("OK")
 
-    @typing.override
     def reaction_posted(self, m: oxenmq.Message):
-        req: dict[bytes, bt_value] = oxenc.bt_deserialize(m.dataview()[0])
+        req: Dict[bytes, bt_value] = oxenc.bt_deserialize(m.dataview()[0])
         print(f"reaction_posted, req = {req}")
         msg_id: MessageID = typing.cast(int, req[b'msg_id'])
         session_id: SessionID = bytes.fromhex(typing.cast(bytes, req[b'session_id']).decode('utf-8'))
