@@ -2,6 +2,7 @@
 # this pre-forking.
 
 import oxenmq
+from typing import Optional
 from oxenc import bt_serialize
 from datetime import timedelta
 
@@ -68,7 +69,7 @@ def send_mule(command, *args, prefix="worker."):
         omq.send(mule_conn, command, *(bt_serialize(data) for data in args))
 
 
-def send_mule_request(command, *args, prefix="worker.", timeout=timedelta(seconds=1)):
+def send_mule_request(command, *args, prefix: Optional[str] ="worker.", timeout=timedelta(seconds=1)):
     """
     Sends a request to the mule from a worker (or possibly from the mule itself).  The command will
     be prefixed with "worker." (unless overridden).

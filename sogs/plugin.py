@@ -9,7 +9,7 @@ import typing_extensions
 import datetime
 import configparser
 
-from .types import SessionID, MessageID, bt_value, MessageRequest
+from .types import SessionID, MessageID, bt_value, PluginInsertMessage, RoomAddPostRequest
 from typing          import Callable, Dict, List, Optional, Union
 from datetime        import timedelta
 from sogs.model.post import Post
@@ -409,33 +409,14 @@ class Plugin:
 
     def filter_message(self, m: oxenmq.Message):
         try:
-            req_raw: Dict[bytes, bt_value] = oxenc.bt_deserialize(m.dataview()[0])
-            req                            = MessageRequest.from_bencode(req_raw)
-
-            log.debug(f"Filter message received: {req_raw}")
-            # NOTE: Example
-            #
-            # {b'alt_id': b'15dae60d80fa50f570831ddd02345556120c7508f749fd15f24002ff2a74b436cd',
-            #  b'data_size': 160,
-            #  b'filtered': 0,
-            #  b'is_mod': 0,
-            #  b'message_data': b"\n\x1c\n\x07testttt\xaa\x06\r\n\tAnonymous\x18\x00\xd0\x06\x01`\x00h\x00x\xaf\xff\xa7\xc2\xc03\x8a\x01@Q\x13Ki\xde\xfc\x7f=\x81M\xc0\x91\x96\x82\xcc\xd7\xb0%kVC\xd5\x8aYo(\xdf\xbf\xdbj(\xbf5\xbd,5\x81\xcb\x8a\xd0O\xa2\x8b\xe8\x12'\x02:1b\xfd:B\xe3\x04\xce\xd4O\xbf=I\xe3$\x02\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
-            #  b'room_id': 3,
-            #  b'room_name': b'foobar4',
-            #  b'room_token': b'foobar4',
-            #  b'session_id': b'25a9ae1d59778a30abb54e9a6bbbd4832a40c27bb92afbcda0f28df3094d2b55a4',
-            #  b'sig': b'/Cs\xab\xea\xfb\xa29\xee\xaao\x8cJ,\xba\\\x86g#Y<\xca\xce\x9a\x99\x85\x88\xca\xd6\xb6\x96\xe2/\xf7Q\x043b!\xb9\xf7\xcc\r\xbf(\xbd\x80\xba@`\xa1\x00\x94\x10V\xf2U\xa8\xc4\xd7k\xe3\xb0\r',
-            #  b'user_id': 5,
-            #  b'whisper_mods': 0}
-
+            req                  = RoomAddPostRequest.from_bencode(oxenc.bt_deserialize(m.dataview()[0]))
             resp: FilterResponse = self.filter(req)
-            print(f"filter_message returning '{resp}' as filter response")
             return oxenc.bt_serialize(str(resp))
         except Exception as e:
             print(f"Exception filtering message: {e}")
             return oxenc.bt_serialize(str(FilterResponse.Reject))
 
-    def filter(self, req: MessageRequest) -> FilterResponse:  # pyright: ignore[reportUnusedParameter]
+    def filter(self, req: RoomAddPostRequest) -> FilterResponse:  # pyright: ignore[reportUnusedParameter]
         """
         Users may override this function for custom filtering, or supply a callable filter object
         """
@@ -564,7 +545,7 @@ class Plugin:
                      room_token:           bytes,
                      body:                 str,
                      *,
-                     whisper_target:       Optional[SessionID] = None,
+                     whisper_to:           Optional[int] = None,
                      relay_to_plugins:     bool = False,
                      attachments_metadata: Optional[List[Dict[str, typing.Any]]] = None) -> Optional[MessageID]:
         from sogs import session_pb2 as protobuf
@@ -613,50 +594,34 @@ class Plugin:
         # FIXME: Use 25-blinding when Session is ready and deprecate 15-blinded keys
         from session_util.blinding import blind15_sign
         sig:    bytes               = blind15_sign(self.ed_privkey, self.sogs_pubkey, content)
-        result: Optional[MessageID] = self.inject_message(room_token, self.session_id, content, sig, whisper_target=whisper_target, relay_to_plugins=relay_to_plugins, attachment_ids=attachment_ids)
+        result: Optional[MessageID] = self._insert_message(room_token, self.session_id, content, sig, whisper_to=whisper_to, relay_to_plugins=relay_to_plugins, attachment_ids=attachment_ids)
         return result
 
-    # This can be used either to post a message from the plugin *or* to re-inject a now-approved user message
-    # Pass whisper_target=session_id if the message is a whisper to a user
-    # Pass whisper_mods="yes" if the message is a mod whisper
-    def inject_message(
-        self,
-        room_token:     bytes,
-        session_id:     SessionID,
-        message:        bytes,
-        sig:            bytes,
-        *,
-        relay_to_plugins: bool                = False,
-        whisper_target:   Optional[SessionID] = None,
-        whisper_mods:     Optional[bool]      = False,
-        attachment_ids:   Optional[List[int]] = None,
-    ) -> Optional[MessageID]:
-        req: Dict[bytes, typing.Any] = {
-            b"room_token":       room_token,
-            b"session_id":       session_id.hex(),
-            b"message":          message,
-            b"sig":              sig,
-            b"whisper_mods":     whisper_mods,
-            b"relay_to_plugins": relay_to_plugins,
-        }
-
-        if whisper_target:
-            req[b"whisper_target"] = whisper_target.hex()
-
-        if relay_to_plugins:
-            req[b"relay_to_plugins"] = True
-
-        if attachment_ids:
-            req[b"files"] = attachment_ids
-
+    def _insert_message(self,
+                        room_token:       bytes,
+                        session_id:       SessionID,
+                        message:          bytes,
+                        sig:              bytes,
+                        *,
+                        relay_to_plugins: bool                = False,
+                        whisper_mods:     bool                = False,
+                        whisper_to:       Optional[int]       = None,
+                        attachment_ids:   Optional[List[int]] = None,) -> Optional[MessageID]:
+        req = PluginInsertMessage(room_token       = room_token,
+                                  session_id       = session_id,
+                                  message_data     = message,
+                                  sig              = sig,
+                                  whisper_mods     = whisper_mods,
+                                  whisper_to       = whisper_to,
+                                  attachment_ids   = attachment_ids or [],
+                                  relay_to_plugins = relay_to_plugins,)
         conn: oxenmq.ConnectionID = self._require_conn_established()
-        resp = oxenc.bt_deserialize(self.omq.request_future(conn, "plugin.message", oxenc.bt_serialize(req), request_timeout=timedelta(seconds=5)).get()[0])
-
+        resp = oxenc.bt_deserialize(self.omq.request_future(conn, "plugin.insert_message", req.to_bencode(), request_timeout=timedelta(seconds=5)).get()[0])
         if not b'msg_id' in resp:
             return None
 
         msg_id = typing.cast(MessageID, resp[b'msg_id'])
-        print(f"Message injected, id: {msg_id}")
+        print(f"Message inserted, id: {msg_id}")
         return msg_id
 
     def post_reactions(self, room_token: bytes, msg_id: MessageID, *reactions: str) -> Dict[bytes, bt_value]:

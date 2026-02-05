@@ -23,42 +23,56 @@ bt_value = Union[
     bytes,
     str,
     List["bt_value"],
+    List[int], # Covered by bt_value, but LSP still gets confused
     Dict[Union[bytes, str], "bt_value"],
 ]
 
 @dataclasses.dataclass
-class MessageRequest:
+class MessageInsert:
+    unpadded_data:    bytes
+    padded_data_size: int
+    filtered:         bool
+    user_id:          int
+    whisper_mods:     bool
+    sig:              bytes
+    alt_id:           Optional[SessionID] = None # 15-blinded x25519 pubkey as raw 33 bytes
+    whisper_to:       Optional[int]       = None # User ID that this message was whispered to
+
+@dataclasses.dataclass
+class RoomAddPostRequest:
+    """When a message is posted to a room, a request describing the post to be added is created with
+    this structure and relayed to plugins for running the pre/post message hooks with this data"""
+    room_id:      int
+    room_token:   bytes
+    room_name:    str
+    user_id:      int
+    session_id:   SessionID
+    message_data: bytes
     data_size:    int
+    sig:          bytes
     filtered:     bool
     is_mod:       bool
-    message_data: bytes
-    room_id:      int
-    room_name:    str
-    room_token:   bytes
-    session_id:   SessionID  # 25-blinded x25519 pubkey as raw 33 bytes
-    sig:          bytes
-    user_id:      int
     whisper_mods: bool
-    alt_id:       Optional[SessionID] = None # 15-blinded x25519 pubkey as raw 33 bytes
     whisper_to:   Optional[int]       = None # User ID that this message was whispered to
+    alt_id:       Optional[SessionID] = None # 15-blinded x25519 pubkey as raw 33 bytes
 
-    @classmethod
-    def from_dict(cls, src: Dict[bytes, bt_value]):
-        result = MessageRequest(data_size    = typing.cast(int,   src[b'data_size']),
-                                filtered     = typing.cast(bool,  src[b'filtered']),
-                                is_mod       = typing.cast(bool,  src[b'is_mod']),
-                                message_data = typing.cast(bytes, src[b'message_data']),
-                                room_id      = typing.cast(int,   src[b'room_id']),
-                                room_name    = typing.cast(bytes, src[b'room_name']).decode('utf-8'),
-                                room_token   = typing.cast(bytes, src[b'room_token']),
-                                session_id   = bytes.fromhex(typing.cast(bytes, src[b'session_id']).decode('utf-8')),
-                                sig          = bytes.fromhex(typing.cast(bytes, src[b'sig']).decode('utf-8')),
-                                user_id      = typing.cast(int,   src[b'user_id']),
-                                whisper_mods = typing.cast(bool,  src[b'whisper_mods']))
+    @staticmethod
+    def from_dict(src: Dict[bytes, bt_value]) -> "RoomAddPostRequest":
+        result = RoomAddPostRequest(room_id      = typing.cast(int,   src[b'room_id']),
+                                    room_name    = typing.cast(bytes, src[b'room_name']).decode('utf-8'),
+                                    room_token   = typing.cast(bytes, src[b'room_token']),
+                                    user_id      = typing.cast(int,   src[b'user_id']),
+                                    session_id   = bytes.fromhex(typing.cast(bytes, src[b'session_id']).decode('utf-8')),
+                                    message_data = typing.cast(bytes, src[b'message_data']),
+                                    data_size    = typing.cast(int,   src[b'data_size']),
+                                    sig          = bytes.fromhex(typing.cast(bytes, src[b'sig']).decode('utf-8')),
+                                    filtered     = typing.cast(bool,  src[b'filtered']),
+                                    is_mod       = typing.cast(bool,  src[b'is_mod']),
+                                    whisper_mods = typing.cast(bool,  src[b'whisper_mods']))
 
         if b"alt_id" in src:
             assert isinstance(src[b"alt_id"], bytes)
-            result.alt_id = bytes.fromhex(src[b'alt_id'].decode('utf-8'))
+            result.alt_id = src[b'alt_id']
 
         if b"whisper_to" in src:
             assert isinstance(src[b"whisper_to"], int)
@@ -66,22 +80,87 @@ class MessageRequest:
 
         return result
 
+    @staticmethod
+    def from_bencode(data: Union[bytes, memoryview]) -> "RoomAddPostRequest":
+        d: Dict[bytes, bt_value] = oxenc.bt_deserialize(data)
+        result                   = RoomAddPostRequest.from_dict(d)
+        return result
+
     def to_dict(self) -> Dict[bytes, bt_value]:
-        result: Dict[bytes, bt_value] = {b'data_size':     self.data_size,
-                                         b'filtered':      int(self.filtered),
-                                         b'is_mod':        int(self.is_mod),
-                                         b'message_data':  self.message_data,
-                                         b'room_id':       self.room_id,
-                                         b'room_name':     self.room_name.encode('utf-8'),
-                                         b'room_token':    self.room_token,
-                                         b'session_id':    self.session_id.hex().encode('utf-8'),
-                                         b'sig':           self.sig.hex().encode('utf-8'),
-                                         b'user_id':       self.user_id,
-                                         b'whisper_mods':  int(self.whisper_mods)}
+        result: Dict[bytes, bt_value] = {b'room_id':          self.room_id,
+                                         b'room_name':        self.room_name.encode('utf-8'),
+                                         b'room_token':       self.room_token,
+                                         b'user_id':          self.user_id,
+                                         b'session_id':       self.session_id.hex().encode('utf-8'),
+                                         b'message_data':     self.message_data,
+                                         b'data_size':        self.data_size,
+                                         b'sig':              self.sig.hex().encode('utf-8'),
+                                         b'filtered':         int(self.filtered),
+                                         b'is_mod':           int(self.is_mod),
+                                         b'whisper_mods':     int(self.whisper_mods)}
         if self.alt_id:
             result[b"alt_id"] = self.alt_id
         if self.whisper_to:
             result[b"whisper_to"] = self.whisper_to
+        return result
+
+    def to_bencode(self) -> bytes:
+        d      = self.to_dict()
+        result = oxenc.bt_serialize(d)
+        return result
+
+@dataclasses.dataclass
+class PluginInsertMessage:
+    """Message insertion request from plugin to SOGS. Minimal set of fields needed for plugin-inserted messages."""
+    room_token:       bytes
+    session_id:       SessionID  # 25-blinded x25519 pubkey as raw 33 bytes
+    message_data:     bytes
+    sig:              bytes
+    whisper_mods:     bool
+    whisper_to:       Optional[int] = None  # User ID that this message was whispered to
+    attachment_ids:   List[int]     = dataclasses.field(default_factory=list)
+    relay_to_plugins: bool          = False
+
+    @staticmethod
+    def from_dict(src: Dict[bytes, bt_value]) -> "PluginInsertMessage":
+        result = PluginInsertMessage(
+            room_token       = typing.cast(bytes, src[b'room_token']),
+            session_id       = bytes.fromhex(typing.cast(bytes, src[b'session_id']).decode('utf-8')),
+            message_data     = typing.cast(bytes, src[b'message_data']),
+            sig              = bytes.fromhex(typing.cast(bytes, src[b'sig']).decode('utf-8')),
+            whisper_mods     = typing.cast(bool, src[b'whisper_mods']),
+            relay_to_plugins = typing.cast(bool, src[b'relay_to_plugins'])
+        )
+
+        if b"whisper_to" in src:
+            assert isinstance(src[b"whisper_to"], int)
+            result.whisper_to = src[b"whisper_to"]
+
+        if b"attachment_ids" in src:
+            assert isinstance(src[b"attachment_ids"], List)
+            result.attachment_ids = typing.cast(List[int], src[b"attachment_ids"])
+
+        return result
+
+    @staticmethod
+    def from_bencode(data: Union[bytes, memoryview]) -> "PluginInsertMessage":
+        d: Dict[bytes, bt_value] = oxenc.bt_deserialize(data)
+        result                   = PluginInsertMessage.from_dict(d)
+        return result
+
+    def to_dict(self) -> Dict[bytes, bt_value]:
+        result: Dict[bytes, bt_value] = {
+            b'room_token':       self.room_token,
+            b'session_id':       self.session_id.hex().encode('utf-8'),
+            b'message_data':     self.message_data,
+            b'sig':              self.sig.hex().encode('utf-8'),
+            b'whisper_mods':     int(self.whisper_mods),
+            b'relay_to_plugins': int(self.relay_to_plugins),
+        }
+        if self.whisper_to:
+            result[b"whisper_to"] = self.whisper_to
+        if len(self.attachment_ids):
+            result[b"attachment_ids"] = self.attachment_ids
         return result
 
     def to_bencode(self) -> bytes:

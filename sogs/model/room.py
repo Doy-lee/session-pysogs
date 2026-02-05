@@ -25,7 +25,7 @@ import re
 import sqlalchemy.exc
 import time
 import sogs.types
-from typing import Optional, Union, List
+from typing import Optional, Union, List, Dict
 import typing
 
 import sys
@@ -637,10 +637,7 @@ class Room:
             }
             # response is meaningless for now; just used to wait for mule.
             from datetime import timedelta
-
-            plugin_resp = synchronous_mule_request(
-                "worker.request_read", req, prefix=None, timeout=timedelta(seconds=3)
-            )
+            plugin_resp = synchronous_mule_request("worker.request_read", req, prefix=None, timeout=timedelta(seconds=3))
 
         msgs = []
 
@@ -986,7 +983,7 @@ class Room:
         # FIXME: can we send back some error code that makes Session not retry?
         raise PostRejected(f"filtration rejected message ({filter_type})")
 
-    def _own_files(self, msg_id: int, files: List[int], user):
+    def own_files(self, msg_id: int, files: List[int], user: User):
         """
         Associated any of the given file ids with the given message id.  Only files that are recent,
         expiring, unowned uploads by the same user are actually updated.
@@ -1016,9 +1013,8 @@ class Room:
             bind_expanding=['ids'],
         )
 
-    def insert_message(self, message: sogs.types.MessageRequest) -> int:
+    def insert_message(self, message: sogs.types.MessageInsert) -> int:
         with db.transaction():
-            unpadded_data = utils.remove_session_message_padding(message.message_data)
             result: int   = db.insert_and_get_pk(
                 """
                 INSERT INTO messages
@@ -1029,8 +1025,8 @@ class Room:
                 "id",
                 r            = typing.cast(int, self.id),
                 u            = message.user_id,
-                data         = unpadded_data,
-                data_size    = message.data_size,
+                data         = message.unpadded_data,
+                data_size    = message.padded_data_size,
                 signature    = message.sig,
                 filtered     = message.filtered,
                 whisper      = message.whisper_to if message.whisper_to else None,
@@ -1038,18 +1034,6 @@ class Room:
                 alt_id       = message.alt_id.hex() if message.alt_id else None,
             )
             return result
-
-    def plugin_handle_message(self, message_args):
-        try:
-            app.logger.warning("Filtering via plugins")
-
-            return bt_deserialize(
-                synchronous_mule_request("worker.message_request", message_args, prefix=None)[0]
-            )
-        except Exception as e:
-            app.logger.warn(f"Plugin filter exception: {e}")
-            if not test_suite:
-                raise PostRejected(f"filtration rejected message (plugin rejected)")
 
     def add_post(
         self,
@@ -1104,32 +1088,33 @@ class Room:
                 if recent_count >= rate_limit_size:
                     raise PostRateLimited()
 
-        data_size = len(data)
-
-        message_args = {
-            "room_id": self.id,
-            "room_token": self.token,
-            "room_name": self.name,
-            "user_id": user.id,
-            "session_id": user.session_id,
-            "message_data": data,
-            "data_size": data_size,
-            "sig": sig,
-            "filtered": filtered is not None,
-            "is_mod": self.check_moderator(user),
-            "whisper_mods": whisper_mods,
-        }
+        room_msg_post = sogs.types.RoomAddPostRequest(room_id      = self.id,
+                                                      room_token   = self.token,
+                                                      room_name    = self.name,
+                                                      user_id      = user.id,
+                                                      session_id   = user.session_id,
+                                                      message_data = data,
+                                                      data_size    = len(data),
+                                                      sig          = sig,
+                                                      filtered     = filtered is not None,
+                                                      is_mod       = typing.cast(bool, self.check_moderator(user)),
+                                                      whisper_mods = whisper_mods,)
         if whisper_to:
-            message_args["whisper_to"] = whisper_to.id
+            room_msg_post.whisper_to = whisper_to.id
         if user.alt_id:
-            message_args["alt_id"] = user.using_id
+            room_msg_post.alt_id = bytes.fromhex(user.using_id)
 
-        plugin_response = self.plugin_handle_message(message_args)
+        # Post the message to the mule worker to be run against the plugin hooks
+        plugin_response: Dict[bytes, sogs.types.bt_value] = {}
+        try:
+            plugin_response = bt_deserialize(synchronous_mule_request("worker.on_room_add_post_request", room_msg_post.to_bencode(), prefix=None)[0])
+        except Exception as e:
+            app.logger.warning(f"Plugin filter exception: {e}")
+            if not test_suite:
+                raise PostRejected(f"filtration rejected message (plugin rejected)")
 
         if not b"ok" in plugin_response:
-            error_str = (
-                plugin_response[b"error"] if b"error" in plugin_response else "an unknown error occurred"
-            )
+            error_str = (plugin_response[b"error"] if b"error" in plugin_response else "an unknown error occurred")
             app.logger.warning(f"add_post, plugin error: {error_str}")
             raise PostRejected(f"{error_str}")
 
@@ -1138,13 +1123,12 @@ class Room:
             #       e.g. for slash-command handling
             return dict()
 
-        msg_id = plugin_response[b"msg_id"]
-
+        msg_id = typing.cast(int, plugin_response[b"msg_id"])
         with db.transaction():
 
             if files:
                 # Take ownership of any uploaded files attached to the post:
-                self._own_files(msg_id, files, user)
+                self.own_files(msg_id, files, user)
 
             assert msg_id is not None
             row = query("SELECT posted, seqno FROM messages WHERE id = :m", m=msg_id).first()
@@ -1231,7 +1215,7 @@ class Room:
 
             if files:
                 # If the edit includes new attachments then own them:
-                self._own_files(msg_id, files, user)
+                self.own_files(msg_id, files, user)
 
         send_mule("message_edited", msg_id)
 

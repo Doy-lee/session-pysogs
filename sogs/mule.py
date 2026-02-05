@@ -6,6 +6,8 @@ import dataclasses
 import typing
 import sogs.plugin
 import sogs.types
+import sogs.utils
+import logging
 
 from typing import Dict, List, Optional, Set
 from oxenc import bt_deserialize, bt_serialize
@@ -44,6 +46,14 @@ class PluginMetadata:
     # SOGS (e.g. starts hello handshake), the user account for the plugin gets added as a
     # moderator/admin. This field is the user info for said user representing the plugin.
     user: Optional[User] = None
+
+    def describe_str(self) -> str:
+        result = f"Plugin '{self.name}' (id={self.id}"
+        if self.user:
+            result += f", user={typing.cast(str, self.user.session_id)})"
+        else:
+            result += f")"
+        return result
 
 # holds oxenmq ConnectionID -> metadata (plugin_id, plugin session_id, etc.)
 plugin_conn_info: Dict[oxenmq.ConnectionID, PluginMetadata] = {}
@@ -178,24 +188,20 @@ def get_relevant_plugins(where_clause: str, room_id: Optional[int] = None, room_
 # Commands from SOGS/uwsgi
 @needs_app_context
 @log_exceptions
-def message_request(m: oxenmq.Message) -> Optional[bytes]:
+def plugin_on_room_add_post_request(m: oxenmq.Message) -> Optional[bytes]:
     """Called by SOGS when a user sends a message to a room to executed pre/post on-message hooks"""
-    app.logger.debug("message_request called on mule")
-
     responded = False
     try:
         # Run message filtering hooks
-        req:         sogs.types.MessageRequest  = sogs.types.MessageRequest.from_dict(bt_deserialize(m.dataview()[0]))
-        filter_resp: sogs.plugin.FilterResponse = plugin_filter_message(m.data(), room_id=req.room_id)
+        req:         sogs.types.RoomAddPostRequest = sogs.types.RoomAddPostRequest.from_bencode(m.dataview()[0])
+        filter_resp: sogs.plugin.FilterResponse    = plugin_filter_message(req)
         if filter_resp == sogs.plugin.FilterResponse.Reject:
             return bt_serialize({b"error": "Message rejected by filter plugin(s)"})
 
-        if filter_resp == sogs.plugin.FilterResponse.Silent:
-            req.filtered = True
-
-        # Regenerate the payload (w/ filtered now set, if it was filtered)
+        # Create the updated payload (w/ filtered now set, if it was filtered)
         raw_payload: list[bytes] = m.data()
-        if req.filtered:
+        if filter_resp == sogs.plugin.FilterResponse.Silent:
+            req.filtered   = True
             raw_payload[0] = req.to_bencode()
 
         # TODO: Make the command trigger character configurable. IMO this is not important, infact
@@ -215,15 +221,24 @@ def message_request(m: oxenmq.Message) -> Optional[bytes]:
 
         # TODO: handle edit message
         room              = Room(id=req.room_id)
-        msg_id: MessageID = room.insert_message(req)
-        responded         = True
+        msg_id: MessageID = room.insert_message(sogs.types.MessageInsert(
+            unpadded_data    = utils.remove_session_message_padding(req.message_data),
+            padded_data_size = len(req.message_data),
+            filtered         = req.filtered,
+            user_id          = req.user_id,
+            whisper_mods     = req.whisper_mods,
+            sig              = req.sig,
+            alt_id           = req.alt_id,
+            whisper_to       = req.whisper_to,
+        ))
 
-        # manually reply so we don't hold up the worker longer than necessary
+        # Manually reply so we don't hold up the worker longer than necessary
         m.reply(bt_serialize({b"ok": True, b"msg_id": msg_id}))
+        responded = True
 
         # Run post-message hooks that can react to the _act_ of a message being posted into the room
         plugin_post_message_commands(raw_payload, command)
-        on_message_posted(msg_id)
+        _on_message_posted(msg_id)
     except Exception as e:
         app.logger.warning(f"Exception handling new/edited message from sogs: {e}")
         if not responded:
@@ -251,9 +266,7 @@ def request_read(m: oxenmq.Message):
 
     try:
         app.logger.debug(f"Giving command 'request_read' to plugin (id={plugin_id})")
-        _ = o.omq.request_future(
-            plugin_conns[plugin_id], "plugin.request_read", data=m.data(), request_timeout=timedelta(seconds=1)
-        ).get()
+        _ = o.omq.request_future(plugin_conns[plugin_id], "plugin.request_read", *m.data(), request_timeout=timedelta(seconds=1)).get()
     except TimeoutError as e:
         app.logger.warning(f"Timeout from plugin (id={plugin_id}) handling request_read: {e}")
     except Exception:
@@ -283,8 +296,8 @@ def message_edited(m: oxenmq.Message):
 
 
 @log_exceptions
-def plugin_filter_message(data: List[bytes], room_id: int) -> sogs.plugin.FilterResponse:
-    plugin_ids: Optional[Dict[PluginID, PluginInfo]] = get_relevant_plugins("approver = 1", room_id=room_id)
+def plugin_filter_message(req: sogs.types.RoomAddPostRequest) -> sogs.plugin.FilterResponse:
+    plugin_ids: Optional[Dict[PluginID, PluginInfo]] = get_relevant_plugins("approver = 1", room_id=req.room_id)
     if not plugin_ids:
         return sogs.plugin.FilterResponse.Accept
 
@@ -299,10 +312,7 @@ def plugin_filter_message(data: List[bytes], room_id: int) -> sogs.plugin.Filter
     # Submit the message to the plugins and collect the async handles
     pending_requests: List[oxenmq.ResultFuture] = []
     for id in plugin_ids:
-        pending_requests.append(o.omq.request_future(conn    = plugin_conns[id],
-                                                     cmd     = "plugin.filter_message",
-                                                     data    = data,
-                                                     timeout = timedelta(seconds=1).seconds))
+        pending_requests.append(o.omq.request_future(plugin_conns[id], "plugin.filter_message", req.to_bencode(), timeout = timedelta(seconds=1).seconds,))
 
     # Await all the async handles
     silent = False
@@ -313,9 +323,9 @@ def plugin_filter_message(data: List[bytes], room_id: int) -> sogs.plugin.Filter
                 return sogs.plugin.FilterResponse.Reject
 
             resp_text: str = typing.cast(bytes, bt_deserialize(response[0])).decode('utf-8')
-            if resp_text == sogs.plugin.FilterResponse.Accept:
+            if resp_text == str(sogs.plugin.FilterResponse.Accept):
                 continue
-            elif resp_text == sogs.plugin.FilterResponse.Silent:
+            elif resp_text == str(sogs.plugin.FilterResponse.Silent):
                 silent = True
                 continue
             else:
@@ -409,11 +419,11 @@ def setup_omq():
     plugin.add_request_command("delete_message", plugin_delete_message)
     plugin.add_request_command("post_reactions", plugin_post_reactions)
     plugin.add_request_command("remove_reactions", plugin_remove_reactions)
-    plugin.add_request_command("message", plugin_insert_message)
+    plugin.add_request_command("insert_message", plugin_insert_message)
     plugin.add_request_command("upload_file", plugin_upload_file)
     plugin.add_request_command("set_user_room_permissions", plugin_set_user_room_permissions)
     worker = omq.add_category("worker", access_level=oxenmq.AuthLevel.admin)
-    worker.add_request_command("message_request", message_request)
+    worker.add_request_command("on_room_add_post_request", plugin_on_room_add_post_request)
     worker.add_request_command("request_read", request_read)
     worker.add_command("messages_deleted", messages_deleted)
     worker.add_command("message_edited", message_edited)
@@ -636,70 +646,57 @@ def plugin_delete_message(m: oxenmq.Message):
 
 @needs_app_context
 @log_exceptions
-def plugin_insert_message(m: oxenmq.Message):
-    req = bt_deserialize(m.dataview()[0])
-
-    sender                          = User(session_id=req[b'session_id'].decode('ascii'), autovivify=True, touch=False)
-    whisper_target: Optional[bytes] = None
-    if b'whisper_target' in req:
+def plugin_insert_message(m: oxenmq.Message) -> bytes:
+    metadata: PluginMetadata   = plugin_conn_info[m.conn] if m.conn in plugin_conn_info else PluginMetadata()
+    req                        = sogs.types.PluginInsertMessage.from_bencode(m.dataview()[0])
+    sender                     = User(session_id=req.session_id.hex(), autovivify=True, touch=False)
+    whisper_to: Optional[User] = None
+    if req.whisper_to:
         try:
-            whisper_target = User(session_id=req[b'whisper_target'].decode('ascii'), autovivify=False)
+            whisper_to = User(id=req.whisper_to, autovivify=False)
         except Exception:
-            # invalid whisper target, plugin messed up?
-            app.logger.warning(f"Plugin attempted to whisper an inexistent user...")
+            app.logger.warning(f"{metadata.describe_str()} attempted to whisper a non-existing user: {req.whisper_to}")
             return bt_serialize({b'error': "NoSuchUser"})
 
-    whisper_mods = req[b'whisper_mods']
+    msg_id: MessageID = 0
     with db.transaction():
+        # Lookup room to insert to
         try:
-            room = Room(token=req[b"room_token"].decode("ascii"))
+            room = Room(token=req.room_token.decode("utf-8"))
         except Exception:
-            app.logger.warning(f"Plugin attempted to post message to inexistent room...")
+            app.logger.warning(f"{metadata.describe_str()} attempted to post message to a non-existing room...")
             return bt_serialize({b'error': "NoSuchRoom"})
 
-        sig = req[b'sig']
-        msg = req[b'message']
-        plugin_str = sender.session_id + f" ({sender.using_id})"
-        whisper_target_str = ''
-        if whisper_target:
-            whisper_target_str = whisper_target.session_id + f" ({whisper_target.using_id})"
-        app.logger.debug(f"Posting message from plugin: {plugin_str}")
-        app.logger.debug(f"signature: {sig}")
-        app.logger.debug(f"Whisper target: {whisper_target_str}")
-        p = Post(raw=msg)
-        app.logger.debug(f"message text: {p.text}")
-        app.logger.debug(f"message username: {p.username}")
+        p = Post(raw=req.message_data)
+        if app.logger.level <= logging.DEBUG:
+            log_line = (f"{metadata.describe_str()} inserting message\n"
+                        f"  Room:      {room.name} (token={room.token})\n"
+                        f"  Sender:    {sender.session_id} (id={sender.id}, username={p.username} using_id={sender.using_id})\n"
+                        f"  Signature: {req.sig.hex()}\n"
+                        f"  Message:   {p.text}\n")
+            if whisper_to:
+                log_line += f"  Whisper: {whisper_to.session_id} (id={whisper_to.id}, using_id={whisper_to.using_id})"
+            if len(req.attachment_ids):
+                log_line += f"  Files ({len(req.attachment_ids)}): {req.attachment_ids}"
 
-        message_args = {
-            b"room_id": room.id,
-            b"room_token": room.token,
-            b"room_name": room.name,
-            b"user_id": sender.id,
-            b"session_id": sender.session_id,
-            b"message_data": msg,
-            b"data_size": len(msg),
-            b"sig": sig,
-            b"filtered": False,
-            b"is_mod": room.check_moderator(sender),
-            b"whisper_mods": whisper_mods,
-        }
-        if whisper_target:
-            message_args[b"whisper_to"] = whisper_target.id
-        if sender.alt_id:
-            message_args[b"alt_id"] = sender.using_id
+        # Insert message to DB (plugin-inserted messages are not filtered, hence filtered=False)
+        msg_id = room.insert_message(sogs.types.MessageInsert(
+            unpadded_data    = sogs.utils.remove_session_message_padding(req.message_data),
+            padded_data_size = len(req.message_data),
+            filtered         = False,
+            user_id          = sender.id,
+            whisper_mods     = req.whisper_mods,
+            sig              = req.sig,
+            alt_id           = bytes.fromhex(sender.using_id) if sender.alt_id else None,
+            whisper_to       = req.whisper_to,
+        ))
 
+        if len(req.attachment_ids):
+            room.own_files(msg_id, req.attachment_ids, sender)
+        if req.relay_to_plugins:
+            _on_message_posted(msg_id)
 
-        msg_id = room.insert_message(message_args)
-
-        if b"files" in req:
-            app.logger.debug(f"associating files {req[b'files']} with msg {msg_id}")
-            room._own_files(msg_id, req[b"files"], sender)
-
-        if req[b'relay_to_plugins']:
-            on_message_posted(msg_id)
-
-        return bt_serialize({'msg_id': msg_id})
-
+    return bt_serialize({b'msg_id': msg_id})
 
 @needs_app_context
 @log_exceptions
@@ -714,19 +711,19 @@ def plugin_upload_file(m: oxenmq.Message):
             room = Room(token=req[b"room_token"].decode("ascii"))
         except Exception as e:
             app.logger.warning(f"Plugin attempted to upload file to inexistent room...")
-            return bt_serialize({'error': "NoSuchRoom"})
+            return bt_serialize({b'error': "NoSuchRoom"})
 
         # just passing this as bytes(req[b'file_contents']) was complaining about the type...?
         content = bytes(req[b'file_contents'])
         file_id = room.upload_file(content, metadata.user, filename=req[b'filename'].decode('utf-8'), lifetime=3600.0)
 
         url = f"{config.URL_BASE}/{room.token}/file/{file_id}"
-        return bt_serialize({'file_id': file_id, "url": url})
+        return bt_serialize({b'file_id': file_id, "url": url})
 
 @needs_app_context
 @log_exceptions
-def on_message_posted(msg_id: MessageID):
-    app.logger.warn(f"Calling on_message_posted with id={msg_id}")
+def _on_message_posted(msg_id: MessageID):
+    app.logger.warning(f"Calling on_message_posted with id={msg_id}")
 
     # Fetch the message by message ID
     msg: Optional[Dict[bytes, bt_value]] = None
@@ -836,12 +833,12 @@ def plugin_remove_reactions(m: oxenmq.Message):
 def on_reaction_posted(m: oxenmq.Message):
     msg_dict = bt_deserialize(m.dataview()[0])
     app.logger.warn(f"on_reaction_posted, reaction:\n{msg_dict}")
-    plugin_ids: Dict[PluginID, PluginInfo] = get_relevant_plugins("subscribe = 1", room_id=msg_Dict[b'room_id'])
+    plugin_ids: Dict[PluginID, PluginInfo] = get_relevant_plugins("subscribe = 1", room_id=msg_dict[b'room_id'])
     for key in plugin_ids:
         if key in plugin_conns:
             plugin_info: PluginInfo = plugin_ids[key]
-            app.logger.warn(f"Sending reaction to plugin '{plugin_info.name}' (id={key}, required={plugin_info.name})")
-            o.omq.send(plugin_conns[plugin_id], "plugin.reaction_posted", m.data())
+            app.logger.warn(f"Sending reaction to plugin '{plugin_info.name}' (id={key}, required={plugin_info.required})")
+            o.omq.send(plugin_conns[key], "plugin.reaction_posted", *m.data())
 
 
 # NOTE: this should be a list of IDs; if the plugin cares, it will have stored them.
