@@ -24,7 +24,9 @@ import random
 import re
 import sqlalchemy.exc
 import time
+import sogs.types
 from typing import Optional, Union, List
+import typing
 
 import sys
 
@@ -52,7 +54,6 @@ alphabet_filter_patterns = [
     ('cyrillic', re.compile(r'[\u0400-\u04ff]')),
 ]
 filter_privkeys = {}
-
 
 class Room:
     """
@@ -1015,13 +1016,10 @@ class Room:
             bind_expanding=['ids'],
         )
 
-    def insert_message(self, message):
+    def insert_message(self, message: sogs.types.MessageRequest) -> int:
         with db.transaction():
-            if isinstance(message[b"alt_id"], bytes):
-                app.logger.warning(f"Inserting a message with signing_id as bytes not str")
-
-            unpadded_data = utils.remove_session_message_padding(message[b"message_data"])
-            msg_id = db.insert_and_get_pk(
+            unpadded_data = utils.remove_session_message_padding(message.message_data)
+            result: int   = db.insert_and_get_pk(
                 """
                 INSERT INTO messages
                     (room, "user", data, data_size, signature, filtered, whisper, whisper_mods, alt_id)
@@ -1029,17 +1027,17 @@ class Room:
                     (:r, :u, :data, :data_size, :signature, :filtered, :whisper, :whisper_mods, :alt_id)
                 """,
                 "id",
-                r=self.id,
-                u=message[b"user_id"],
-                data=unpadded_data,
-                data_size=message[b"data_size"],
-                signature=message[b"sig"],
-                filtered=message[b"filtered"],
-                whisper=message[b"whisper_to"] if b"whisper_to" in message else None,
-                whisper_mods=message[b"whisper_mods"],
-                alt_id=message[b"alt_id"] if b"alt_id" in message else None,
+                r            = typing.cast(int, self.id),
+                u            = message.user_id,
+                data         = unpadded_data,
+                data_size    = message.data_size,
+                signature    = message.sig,
+                filtered     = message.filtered,
+                whisper      = message.whisper_to if message.whisper_to else None,
+                whisper_mods = message.whisper_mods,
+                alt_id       = message.alt_id.hex() if message.alt_id else None,
             )
-            return msg_id
+            return result
 
     def plugin_handle_message(self, message_args):
         try:
@@ -1498,7 +1496,7 @@ class Room:
             if not whisper_for_user:
                 raise NoSuchPost(msg_id)
 
-    def add_reaction(self, user: User, msg_id: int, reaction: str, *args, send_to_plugins=True):
+    def add_reaction(self, user: User, msg_id: int, reaction: str, *args, relay_to_plugins=True):
         """
         Adds a reaction to the given post.  Returns True if the reaction was added, False if the
         reaction by this user was already present, throws on other errors.
@@ -1531,7 +1529,7 @@ class Room:
                 seqno = query("SELECT seqno FROM messages WHERE id = :msg", msg=msg_id).first()[0]
                 is_mod = self.check_moderator(user)
                 is_admin = self.check_admin(user)
-                if send_to_plugins:
+                if relay_to_plugins:
                     reaction_dict = {
                         'msg_id': msg_id,
                         'reaction': reaction,

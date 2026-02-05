@@ -9,7 +9,7 @@ import typing_extensions
 import datetime
 import configparser
 
-from sogs.utils      import bt_value
+from .types import SessionID, MessageID, bt_value, MessageRequest
 from typing          import Callable, Dict, List, Optional, Union
 from datetime        import timedelta
 from sogs.model.post import Post
@@ -27,18 +27,6 @@ console_log_handler.setFormatter(log_formatter)
 
 log = logging.Logger('PLUGIN')
 log.addHandler(console_log_handler)
-
-# Represents the Session account as bytes, i.e. 1b Blinding Prefix + 32b X25519 Public Key
-# This is not to be confused with the value of the Session ID that is typically returned from the
-# SOGS server OMQ response which is the hex representation of the Session account but held in a
-# bytes object,
-# e.g.
-#   OMQ Session ID response => b"15aaaa.."       (66 bytes)
-#   `SessionID`             => b"\x15\xaa\xaa.." (33 bytes)
-SessionID  = bytes
-RoomToken  = bytes
-TimestampS = float
-MessageID  = int
 
 class FilterResponse(enum.Enum):
     Accept = "OK"
@@ -82,51 +70,6 @@ class RoomReadRequest:
                                  session_id = bytes.fromhex(typing.cast(bytes, src[b'session_id']).decode('utf-8')),
                                  user_id    = typing.cast(int, src[b'user_id']),)
         return result
-
-@dataclasses.dataclass
-class FilterMessageRequest:
-    alt_id:       SessionID  # 15-blinded x25519 pubkey as raw 33 bytes
-    data_size:    int
-    filtered:     bool
-    is_mod:       bool
-    message_data: bytes
-    room_id:      int
-    room_name:    str
-    room_token:   bytes
-    session_id:   SessionID  # 25-blinded x25519 pubkey as raw 33 bytes
-    sig:          bytes
-    user_id:      int
-    whisper_mods: bool
-
-    @classmethod
-    def from_bencode(cls, src: Dict[bytes, bt_value]):
-        result = FilterMessageRequest(alt_id       = bytes.fromhex(typing.cast(bytes, src[b'alt_id']).decode('utf-8')),
-                                      data_size    = typing.cast(int,   src[b'data_size']),
-                                      filtered     = typing.cast(bool,  src[b'filtered']),
-                                      is_mod       = typing.cast(bool,  src[b'is_mod']),
-                                      message_data = typing.cast(bytes, src[b'message_data']),
-                                      room_id      = typing.cast(int,   src[b'room_id']),
-                                      room_name    = typing.cast(bytes, src[b'room_name']).decode('utf-8'),
-                                      room_token   = typing.cast(bytes, src[b'room_token']),
-                                      session_id   = bytes.fromhex(typing.cast(bytes, src[b'session_id']).decode('utf-8')),
-                                      sig          = bytes.fromhex(typing.cast(bytes, src[b'sig']).decode('utf-8')),
-                                      user_id      = typing.cast(int,   src[b'user_id']),
-                                      whisper_mods = typing.cast(bool,  src[b'whisper_mods']))
-        return result
-
-    def to_bencode(self) -> Dict[bytes, bt_value]:
-        return {b'alt_id':        self.alt_id,
-                b'data_size':     self.data_size,
-                b'filtered':      int(self.filtered),
-                b'is_mod':        int(self.is_mod),
-                b'message_data':  self.message_data,
-                b'room_id':       self.room_id,
-                b'room_name':     self.room_name.encode('utf-8'),
-                b'room_token':    self.room_token,
-                b'session_id':    self.session_id.hex().encode('utf-8'),
-                b'sig':           self.sig.hex().encode('utf-8'),
-                b'user_id':       self.user_id,
-                b'whisper_mods':  int(self.whisper_mods)}
 
 class SetUserRoomPermissionsResponse(enum.Enum):
     NoSuchRoom = 0
@@ -381,11 +324,11 @@ class Plugin:
             conn: oxenmq.ConnectionID = self._require_conn_established()
             self.omq.send(conn, f"plugin.register_pre_commands", oxenc.bt_serialize({b"commands": ["request_read"]}))
 
-    def handle_message_command(self, m: oxenmq.Message, pre_command: bool):
+    def handle_message_command(self, m: oxenmq.Message, pre_command: bool) -> bytes:
         req = oxenc.bt_deserialize(m.dataview()[0])
         msg = Post(raw=req[b"message_data"])
 
-        command_parts = msg.text.split(' ')
+        command_parts = typing.cast(str, msg.text).split(' ')
         if not command_parts: # shouldn't be possible, but false just to signal it happened
             return oxenc.bt_serialize(False)
 
@@ -395,10 +338,7 @@ class Plugin:
             return oxenc.bt_serialize(True)
 
         try:
-            retval = command_container[command](req, command_parts)
-            if not isinstance(retval, bool):
-                print("command handlers must return True or False")
-                return oxenc.bt_serialize(True)
+            retval: bool = command_container[command](req, command_parts)
             return oxenc.bt_serialize(retval)
         except Exception as e:
             print(f"Exception handling slash command: {e}")
@@ -470,7 +410,7 @@ class Plugin:
     def filter_message(self, m: oxenmq.Message):
         try:
             req_raw: Dict[bytes, bt_value] = oxenc.bt_deserialize(m.dataview()[0])
-            req                            = FilterMessageRequest.from_bencode(req_raw)
+            req                            = MessageRequest.from_bencode(req_raw)
 
             log.debug(f"Filter message received: {req_raw}")
             # NOTE: Example
@@ -490,12 +430,12 @@ class Plugin:
 
             resp: FilterResponse = self.filter(req)
             print(f"filter_message returning '{resp}' as filter response")
-            return oxenc.bt_serialize(resp)
+            return oxenc.bt_serialize(str(resp))
         except Exception as e:
             print(f"Exception filtering message: {e}")
-            return oxenc.bt_serialize(FilterResponse.Reject)
+            return oxenc.bt_serialize(str(FilterResponse.Reject))
 
-    def filter(self, req: FilterMessageRequest) -> FilterResponse:  # pyright: ignore[reportUnusedParameter]
+    def filter(self, req: MessageRequest) -> FilterResponse:  # pyright: ignore[reportUnusedParameter]
         """
         Users may override this function for custom filtering, or supply a callable filter object
         """
@@ -506,11 +446,9 @@ class Plugin:
         room_name:       bytes,
         room_token:      bytes,
         user_session_id: SessionID,
-        message_data,
-        username: str,
-        *args,
-        reply_settings: ReplySettings,
-    ):
+        username:        Optional[str],
+        reply_settings:  ReplySettings,
+    ) -> Optional[MessageID]:
         """Call this from your filter() override when you want to reply to a user message, e.g.
         "hey no swearing here"
         """
@@ -522,20 +460,20 @@ class Plugin:
             profile_name = user_session_id_hex if username is None else username,
             profile_at   = f"@{user_session_id_hex}",
             room_name    = room_name.decode('utf-8'),
-            room_token   = room_token,
-        ).encode()
+            room_token   = room_token)
 
-        self.post_message(room_token, body, whisper_target=None if reply_settings.public else user_session_id)
+        result: Optional[MessageID] = self.post_message(room_token=room_token,
+                                                        body=body,
+                                                        whisper_target=None if reply_settings.public else user_session_id)
+        return result;
 
-    def set_user_room_permissions(
-        self,
-        room:         Optional[Union[bytes, int]]  = None,
-        user:         Optional[Union[SessionID, int]] = None,
-        sec_from_now: Optional[int]               = None,
-        accessible:   Optional[bool]              = None,
-        read:         Optional[bool]              = None,
-        write:        Optional[bool]              = None,
-    ) -> SetUserRoomPermissionsResponse:
+    def set_user_room_permissions(self,
+                                  room:         Optional[Union[bytes, int]]     = None,
+                                  user:         Optional[Union[SessionID, int]] = None,
+                                  sec_from_now: Optional[int]                   = None,
+                                  accessible:   Optional[bool]                  = None,
+                                  read:         Optional[bool]                  = None,
+                                  write:        Optional[bool]                  = None) -> SetUserRoomPermissionsResponse:
         """Set the permission(s) of the user for the room
 
         The following parameters must be set, or otherwise this function returns InvalidArg:
@@ -613,7 +551,7 @@ class Plugin:
             resp_list: List[bytes]         = future.get()
             assert len(resp_list) == 1
 
-            resp: Dict[bytes, bt_value] = oxenc.bt_deserialize(resp_list[0])
+            resp = typing.cast(Dict[bytes, bt_value], oxenc.bt_deserialize(resp_list[0]))
             if b'status' in resp and resp[b'status'] == b'OK':
                 result = True
         return result
@@ -627,14 +565,14 @@ class Plugin:
                      body:                 str,
                      *,
                      whisper_target:       Optional[SessionID] = None,
-                     no_plugins:           bool = False,
+                     relay_to_plugins:     bool = False,
                      attachments_metadata: Optional[List[Dict[str, typing.Any]]] = None) -> Optional[MessageID]:
         from sogs import session_pb2 as protobuf
         from time import time
         self.last_post_time = max(self.last_post_time + 1, int(time() * 1000))
 
         content                                 = protobuf.Content()
-        content.dataMessage.body                = body
+        content.dataMessage.body                = body.encode()
         content.dataMessage.timestamp           = self.last_post_time
         content.dataMessage.profile.displayName = self.display_name
 
@@ -674,8 +612,8 @@ class Plugin:
 
         # FIXME: Use 25-blinding when Session is ready and deprecate 15-blinded keys
         from session_util.blinding import blind15_sign
-        sig:    bytes            = blind15_sign(self.ed_privkey, self.sogs_pubkey, content)
-        result: Optional[MessageID] = self.inject_message(room_token, self.session_id, content, sig, whisper_target=whisper_target, no_plugins=no_plugins, attachment_ids=attachment_ids)
+        sig:    bytes               = blind15_sign(self.ed_privkey, self.sogs_pubkey, content)
+        result: Optional[MessageID] = self.inject_message(room_token, self.session_id, content, sig, whisper_target=whisper_target, relay_to_plugins=relay_to_plugins, attachment_ids=attachment_ids)
         return result
 
     # This can be used either to post a message from the plugin *or* to re-inject a now-approved user message
@@ -688,32 +626,31 @@ class Plugin:
         message:        bytes,
         sig:            bytes,
         *,
-        whisper_target: Optional[SessionID] = None,
-        attachment_ids: Optional[List[int]] = None,
+        relay_to_plugins: bool                = False,
+        whisper_target:   Optional[SessionID] = None,
+        whisper_mods:     Optional[bool]      = False,
+        attachment_ids:   Optional[List[int]] = None,
     ) -> Optional[MessageID]:
         req: Dict[bytes, typing.Any] = {
-            b"room_token":   room_token,
-            b"session_id":   session_id.hex(),
-            b"message":      message,
-            b"sig":          sig,
-            b"whisper_mods": whisper_mods,
+            b"room_token":       room_token,
+            b"session_id":       session_id.hex(),
+            b"message":          message,
+            b"sig":              sig,
+            b"whisper_mods":     whisper_mods,
+            b"relay_to_plugins": relay_to_plugins,
         }
 
         if whisper_target:
             req[b"whisper_target"] = whisper_target.hex()
 
-        if no_plugins:
-            req[b"no_plugins"] = True
+        if relay_to_plugins:
+            req[b"relay_to_plugins"] = True
 
         if attachment_ids:
             req[b"files"] = attachment_ids
 
         conn: oxenmq.ConnectionID = self._require_conn_established()
-        resp = oxenc.bt_deserialize(
-            self.omq.request_future(
-                self.conn, "plugin.message", oxenc.bt_serialize(req), request_timeout=timedelta(seconds=5)
-            ).get()[0]
-        )
+        resp = oxenc.bt_deserialize(self.omq.request_future(conn, "plugin.message", oxenc.bt_serialize(req), request_timeout=timedelta(seconds=5)).get()[0])
 
         if not b'msg_id' in resp:
             return None
@@ -723,23 +660,19 @@ class Plugin:
         return msg_id
 
     def post_reactions(self, room_token: bytes, msg_id: MessageID, *reactions: str) -> Dict[bytes, bt_value]:
+        conn: oxenmq.ConnectionID = self._require_conn_established()
         req = {b"room_token": room_token, b"msg_id": msg_id, b"reactions": reactions}
         print(f"post_reactions request: {req}")
-        return oxenc.bt_deserialize(
-            self.omq.request_future(
-                self.conn,
-                "plugin.post_reactions",
-                oxenc.bt_serialize(req),
-                request_timeout=timedelta(seconds=5),
-            ).get()[0]
-        )
+        return oxenc.bt_deserialize(self.omq.request_future( conn, "plugin.post_reactions", oxenc.bt_serialize(req), request_timeout=timedelta(seconds=5)).get()[0])
 
     def remove_reactions(self, room_token: bytes, msg_id: MessageID, *reactions: str):
         req = {b"room_token": room_token, b"msg_id": msg_id, b"reactions": reactions}
         print(f"post_reactions request: {req}")
+
+        conn: oxenmq.ConnectionID = self._require_conn_established()
         return oxenc.bt_deserialize(
             self.omq.request_future(
-                self.conn,
+                conn,
                 "plugin.remove_reactions",
                 oxenc.bt_serialize(req),
                 request_timeout=timedelta(seconds=5),
@@ -754,16 +687,14 @@ class Plugin:
             from pathlib import Path
             file_contents = Path(file_path).read_bytes()
 
-            req = {"filename": filename, "file_contents": file_contents, "room_token": room_token}
+            req: Dict[bytes, bt_value] = {
+                b"filename":      filename,
+                b"file_contents": file_contents,
+                b"room_token":    room_token
+            }
 
-            resp = oxenc.bt_deserialize(
-                self.omq.request_future(
-                    self.conn,
-                    "plugin.upload_file",
-                    oxenc.bt_serialize(req),
-                    request_timeout=timedelta(seconds=3),
-                ).get()[0]
-            )
+            conn: oxenmq.ConnectionID = self._require_conn_established()
+            resp = oxenc.bt_deserialize(self.omq.request_future(conn, "plugin.upload_file", oxenc.bt_serialize(req), request_timeout=timedelta(seconds=3),).get()[0])
 
             if not (b"file_id" in resp and b"url" in resp):
                 print(f"file_id or url missing from sogs response to upload_file")
@@ -778,12 +709,12 @@ class Plugin:
 
             import mimetypes
             from PIL import Image
-            mime = mimetypes.guess_type(file_path)
+            mime                    = mimetypes.guess_type(file_path)
             metadata["contentType"] = mime[0]
-            if mime[0].startswith("image"):
-                img = Image.open(file_path)
-                width, height = img.size
-                metadata["width"] = width
+            if typing.cast(str, mime[0]).startswith("image"):
+                img                = Image.open(file_path)
+                width, height      = img.size
+                metadata["width"]  = width
                 metadata["height"] = height
 
             return metadata

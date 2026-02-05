@@ -80,6 +80,7 @@ import typing
 
 from time               import time
 from sogs.plugin        import *
+from sogs.types         import SessionID, RoomToken, MessageID, TimestampS, bt_value
 from concurrent.futures import ThreadPoolExecutor
 from PIL                import Image,  ImageDraw, ImageFont
 from typing             import Dict, List, Optional, Tuple
@@ -655,7 +656,7 @@ class EmojiCaptchaPlugin(Plugin):
                 if attempts_remaining > 0:
                     remaining               = f"{attempts_remaining} attempt" + ("s" if attempts_remaining > 1 else "")
                     body                    = f"Incorrect emoji, a new CAPTCHA will be available in {self.retry_timeout_s} seconds. {remaining} remaining."
-                    msg_id                  = self.post_message(room_token, body, whisper_target=session_id, no_plugins=True)
+                    msg_id                  = self.post_message(room_token, body, whisper_target=session_id, relay_to_plugins=False)
                     if msg_id:
                         user.captcha_failed_next_attempt_at_ts = now + self.retry_timeout_s
                         user.captcha_state                     = CaptchaState.Wait
@@ -681,7 +682,7 @@ class EmojiCaptchaPlugin(Plugin):
                     else:
                         welcome_message = f"Congratulations! You will be able to read and send messages in {int(s_remaining)} seconds."
 
-                    if self.post_message(room_token, welcome_message, whisper_target=session_id, no_plugins=True):
+                    if self.post_message(room_token, welcome_message, whisper_target=session_id, relay_to_plugins=False):
                         user.captcha_solved_welcome_msg_shown = True
 
                 if s_remaining <= 0 and not user.captcha_solved_grant_access:
@@ -704,7 +705,7 @@ class EmojiCaptchaPlugin(Plugin):
                     user.refresh_msg_id = None
 
                 if user.captcha_attempts >= (self.retry_limit - 1):
-                    user.refresh_msg_id = self.post_message(room_token, EmojiCaptchaPlugin.attempt_limit_str, whisper_target=session_id, no_plugins=True)
+                    user.refresh_msg_id = self.post_message(room_token, EmojiCaptchaPlugin.attempt_limit_str, whisper_target=session_id, relay_to_plugins=False)
                     if user.refresh_msg_id:
                         user.refresh_state = RefreshState.Nil
                 else:
@@ -713,7 +714,7 @@ class EmojiCaptchaPlugin(Plugin):
                     else:
                         timeout:    float   = self.refresh_timeout_s - s_since_refresh
                         body                = f"You can refresh the CAPTCHA in {int(timeout)} second{'s' if timeout > 1 else ''}."
-                        user.refresh_msg_id = self.post_message(room_token, body, whisper_target=session_id, no_plugins=True)
+                        user.refresh_msg_id = self.post_message(room_token, body, whisper_target=session_id, relay_to_plugins=False)
                         if user.refresh_msg_id:
                             user.refresh_state = RefreshState.Wait
 
@@ -726,7 +727,7 @@ class EmojiCaptchaPlugin(Plugin):
         all_captchas_used = user.captcha_attempts >= self.retry_limit
         if all_captchas_used and not user.captcha_limit_msg_shown:
             body = "You have reached the maximum number of CAPTCHA attempts. Contact an Administrator of the community for further assistance"
-            if self.post_message(room_token, body, whisper_target=session_id, no_plugins=True) is not None:
+            if self.post_message(room_token, body, whisper_target=session_id, relay_to_plugins=False) is not None:
                 user.captcha_limit_msg_shown = True
 
         # Determine if a new CAPTCHA should be generated
@@ -790,7 +791,7 @@ class EmojiCaptchaPlugin(Plugin):
         else:
             body += EmojiCaptchaPlugin.attempt_limit_str
 
-        msg_id: Optional[MessageID] = self.post_message(room_token=room_token, body=body, whisper_target=session_id, no_plugins=True, attachments_metadata=[captcha_attachment_metadata])
+        msg_id: Optional[MessageID] = self.post_message(room_token=room_token, body=body, whisper_target=session_id, relay_to_plugins=False, attachments_metadata=[captcha_attachment_metadata])
         if not msg_id:
             log.error(f"Failed to create a CAPTCHA for user 0x{session_id.hex()}: Message post failed")
             user.clear_posted_captcha()

@@ -4,9 +4,13 @@ from .postfork import postfork
 import os
 import logging
 import importlib.resources
-import sqlalchemy
+import sqlalchemy.engine.base
+import sqlalchemy.engine
+import sqlalchemy.engine
 from sys import version_info as python_version
 from sqlalchemy.sql.expression import bindparam
+from werkzeug.local import LocalProxy
+from typing import Optional
 
 HAVE_FILE_ID_HACKS = False
 # roomid => (max, offset).  Max is the highest message id that was in the old table; offset is the
@@ -57,13 +61,11 @@ def query(query, *, dbconn=None, bind_expanding=None, **params):
 
 # Begins a (potentially nested) transaction.  Takes an optional connection; if omitted uses
 # web.appdb.
-def transaction(dbconn=None):
+def transaction(dbconn: Optional[LocalProxy[sqlalchemy.engine.base.Connectable]] = None) -> sqlalchemy.engine.NestedTransaction:
     if dbconn is None:
         from . import web
-
         dbconn = web.appdb
     return dbconn.begin_nested()
-
 
 have_returning = True
 

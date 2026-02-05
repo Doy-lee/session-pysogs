@@ -1,24 +1,30 @@
 from __future__ import annotations
-from enum import Enum, StrEnum
-from typing import Callable, Any, overload, override
+
+import typing_extensions
+
+from enum import Enum
+from typing import Callable, Any
 from datetime import datetime, timedelta
 
 class ConnectionID:
     service_node: bool
     @property
     def pubkey(self) -> bytes: ...
+    @typing_extensions.override
     def __eq__(self, other: object) -> bool: ...
+    @typing_extensions.override
     def __ne__(self, other: object) -> bool: ...
+    @typing_extensions.override
     def __hash__(self) -> int: ...
 
 class Address:
-    @overload
+    @typing_extensions.overload
     def __init__(self, addr: str | bytes) -> None: ...
-    @overload
+    @typing_extensions.overload
     def __init__(self, addr: str | bytes, pubkey: bytes) -> None: ...
-    @overload
+    @typing_extensions.overload
     def __init__(self, host: str, port: int) -> None: ...
-    @overload
+    @typing_extensions.overload
     def __init__(self, host: str, port: int, pubkey: bytes) -> None: ...
     @property
     def pubkey(self) -> bytes | None: ...
@@ -40,8 +46,9 @@ class Address:
     def full_address_hex(self) -> str: ...
     @property
     def qr(self) -> str: ...
-    @override
+    @typing_extensions.override
     def __eq__(self, other: object) -> bool: ...
+    @typing_extensions.override
     def __ne__(self, other: object) -> bool: ...
 
 
@@ -56,11 +63,14 @@ class LogLevel(Enum):
 class TaggedThreadID: ...
 class TimerID: ...
 
-class AuthLevel(StrEnum):
+class AuthLevel(Enum):
     denied = "denied"
     none   = "none"
     basic  = "basic"
     admin  = "admin"
+
+    @typing_extensions.override
+    def __str__(self) -> str: ...
 
 class Access:
     def __init__(self, auth: AuthLevel = AuthLevel.none, remote_sn: bool = False, local_sn: bool = False) -> None: ...
@@ -83,17 +93,20 @@ class Category:
     def add_command(self, name: str, handler: Callable[[Message], None], *, auth: AuthLevel | Access = ..., thread: str | None = None) -> None: ...
     def add_request_command(self, name: str, handler: Callable[[Message], None | bytes | str | list[bytes | str]]) -> None: ...
 
-class FutureStatus(StrEnum):
+class FutureStatus(Enum):
     deferred = "deferred"
     ready    = "ready"
     timeout  = "timeout"
 
+    @typing_extensions.override
+    def __str__(self) -> str: ...
+
 class ResultFuture:
     def valid(self) -> bool: ...
     def wait(self) -> None: ...
-    @overload
+    @typing_extensions.overload
     def wait_for(self, timeout: timedelta, /) -> FutureStatus: ...
-    @overload
+    @typing_extensions.overload
     def wait_for(self, seconds: float, /) -> FutureStatus: ...
     def wait_for(self, timeout: timedelta | float, /) -> FutureStatus: ...
     def wait_until(self, deadline: datetime, /) -> FutureStatus: ...
@@ -108,8 +121,7 @@ class OxenMQ:
     def start(self) -> None: ...
     def send(self, conn: ConnectionID, command: str, *args: bytes | str | list[bytes | str]) -> None: ...
 
-
-    @overload
+    @typing_extensions.overload
     def connect_remote(self, remote: Address, on_success: Callable[[ConnectionID], None], on_failure: Callable[[ConnectionID, str], None], /, *, timeout: int = ..., ephemeral_routing_id: bool | None = None, auth_level: AuthLevel = AuthLevel.none) -> None:
         """Asynchronously starts connecting to a remote address.
 
@@ -131,7 +143,7 @@ class OxenMQ:
         """
         ...
 
-    @overload
+    @typing_extensions.overload
     def connect_remote(self, remote: Address, timeout: int = ..., /, *, ephemeral_routing_id: bool | None = None, auth_level: AuthLevel = AuthLevel.none) -> ConnectionID:
         """Synchronously connects to a remote address.
 
@@ -145,5 +157,79 @@ class OxenMQ:
 
         Keyword-only arguments (same as the async version):
             timeout, ephemeral_routing_id, auth_level
+        """
+        ...
+
+    def connect_inproc(self, on_success: Callable[[ConnectionID], None] | None, on_failure: Callable[[ConnectionID, str], None] | None, **kwargs: Any,) -> ConnectionID:
+        """Establish a connection to ourself.
+
+        Connects to the built-in in-process listening socket of this OxenMQ server for local
+        communication.  Note that auth_level defaults to admin (unlike connect_remote), and the
+        default timeout is much shorter.
+
+        This connection is designed to allow code within the same process to invoke registered
+        commands via the OxenMQ object.  The connection works whether or not there are any
+        accessible external listeners.
+
+        Also note that incoming inproc requests are unauthenticated: that is, they will always have
+        admin-level access.
+
+        Parameters:
+            on_success: called with the new ConnectionID when the connection succeeds.
+            on_failure: called with (conn_id, reason) when the connection fails.
+        """
+        ...
+
+    def listen(self, bind: str, curve: bool, *, allow_connection: Callable[[str, bytes, bool], AuthLevel] | None = None, on_bind: Callable[[bool], None] | None = None) -> None:
+        """Start listening on the given bind address.
+
+        Incoming connections can come from anywhere.  ``allow_connection`` is invoked for any
+        incoming connections on this address to determine the incoming remote's access and
+        authentication level.
+
+        This method may be called after start if dynamic listening is required, but it is generally
+        recommended that long-term fixed listening endpoints be set up by calling this *before*
+        start().
+
+        Parameters:
+            bind: can be any bind address string zmq supports, for example a tcp IP/port combination
+                such as: "tcp://*:4567" or "tcp://1.2.3.4:5678".
+            curve: whether the connection is curve-encrypted (True) or plaintext (False).  For
+                plaintext connections the allow_connection callback will be invoked with an empty
+                remote pubkey and service_node set to False.
+            allow_connection: function to call to determine whether to allow the connection and, if
+                so, the authentication level it receives.  The function is called with the remote's
+                address, the remote's 32-byte pubkey as bytes (only for curve; empty for plaintext),
+                and whether the remote is recognized as a service node (always False for plaintext;
+                requires sn_lookup being configured in construction).  The function must return an
+                AuthLevel value to accept the connection, or AuthLevel.denied to refuse it.  If
+                omitted (or None) the default returns AuthLevel.none access for all incoming
+                connections.
+            on_bind: a callback to invoke when the port has been successfully opened or failed to
+                open, called with a single boolean argument of True for success, False for failure.
+                For addresses set up before .start() this will be called during start() itself; for
+                post-start listens this will be called from the proxy thread when it opens the new
+                port.  Note that this function is called directly from the proxy thread and so should
+                be fast and non-blocking.
+        """
+        ...
+
+    def add_timer(self, job: Callable[[], None], interval: timedelta, *, squelch: bool = True, thread: TaggedThreadID | None = None) -> TimerID:
+        """Adds a callback to be invoked on a repeating timer.
+
+        The callback will be invoked approximately every ``interval``.
+
+        Parameters:
+            job: the callback to invoke on each timer tick.
+            interval: the interval between invocations.
+
+        Keyword-only parameters:
+            squelch: When True (the default) this job will not be double-booked: that is, the
+                callback will be skipped if a previous callback from this timer is already scheduled
+                (or is still running).  If set to False then the callback will be scheduled even if
+                an existing callback has not yet completed.
+            thread: a TaggedThreadID specifying a tagged thread (created with ``add_tagged_thread``)
+                in which the timer should run.  If unspecified then the timer runs in the general
+                batch job queue.
         """
         ...

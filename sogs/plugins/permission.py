@@ -4,7 +4,8 @@ import oxenc
 import oxenmq
 from time import time
 from typing import Optional
-from sogs.plugin import Plugin, bt_value, RoomReadRequest, SessionID, RoomToken, MessageID
+from sogs.types import bt_value, SessionID, RoomToken, MessageID
+from sogs.plugin import Plugin, RoomReadRequest
 from typing import Dict
 
 @dataclasses.dataclass
@@ -36,7 +37,7 @@ class PermissionPlugin(Plugin):
             room_token,
             "Please react with a thumbs up to agree to the room rules.",
             whisper_target=session_id,
-            no_plugins=True,
+            relay_to_plugins=False,
         )
         if msg_id:
             react_resp: Dict[bytes, bt_value] = self.post_reactions(
@@ -76,14 +77,14 @@ class PermissionPlugin(Plugin):
                     room_token,
                     f"You may read now.  Study up, and you may learn to write in {self.write_timeout} seconds.",
                     whisper_target=session_id,
-                    no_plugins=True,
+                    relay_to_plugins=False,
                 )
             else:
                 self.post_message(
                     room_token,
                     f"You chose...poorly.  You may try again in {self.retry_timeout} seconds with a new prompt.",
                     whisper_target=session_id,
-                    no_plugins=True,
+                    relay_to_plugins=False,
                 )
                 self.retry_jail[session_id] = time() + self.retry_timeout
             self.delete_message(msg_id)

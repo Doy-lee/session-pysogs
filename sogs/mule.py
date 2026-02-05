@@ -4,15 +4,15 @@ import time
 import functools
 import dataclasses
 import typing
-import oxenmq
 import sogs.plugin
-from typing import Dict, List, Optional, Set, Union
+import sogs.types
 
+from typing import Dict, List, Optional, Set
 from oxenc import bt_deserialize, bt_serialize
 from datetime import timedelta
 from nacl.encoding import HexEncoder
 
-from sogs.utils import bt_value
+from sogs.types import bt_value, MessageID
 from .web import app
 from . import cleanup
 from . import config
@@ -97,11 +97,9 @@ def run():
 
 
 @needs_app_context
-def allow_conn(addr, pk, sn):
+def allow_conn(addr: str, pk: bytes, sn: bool):  # pyright: ignore[reportUnusedParameter]
     with db.transaction():
-
         row = query("SELECT id FROM plugins WHERE auth_key = :key", key=pk).first()
-
         if row:
             app.logger.debug(f"Plugin connected: {HexEncoder.encode(pk)}")
             return oxenmq.AuthLevel.basic
@@ -110,14 +108,11 @@ def allow_conn(addr, pk, sn):
     # TODO: user recognition auth
     return oxenmq.AuthLevel.denied
 
-
-def admin_conn(addr, pk, sn):
+def admin_conn(addr: str, pk: bytes, sn: bool):  # pyright: ignore[reportUnusedParameter]
     return oxenmq.AuthLevel.admin
 
-
-def inproc_fail(connid, reason):
+def inproc_fail(connid: oxenmq.ConnectionID, reason: str):  # pyright: ignore[reportUnusedParameter]
     raise RuntimeError(f"Couldn't connect mule to itself: {reason}")
-
 
 @needs_app_context
 @log_exceptions
@@ -160,73 +155,79 @@ def get_relevant_plugins(where_clause: str, room_id: Optional[int] = None, room_
             if id_row is None:
                 app.logger.warning(f"filtering message for inexistent room with token: \"{room_token}\"??")
                 return None
-            room_id = id_row['id']
+            room_id = typing.cast(int, id_row['id'])
 
         # Query room-specific plugins and merge with global results
         query_str = "SELECT plugin, required FROM room_plugins WHERE room = :room_id AND " + where_clause
-        rows = query(query_str, room_id=room_id)
+        rows      = query(query_str, room_id=room_id)
         for row in rows:
-            required = False
-            if row['required'] and row['required'] == 1:
-                required = True
+            # Determine if the room mandates that the plugin is required
+            required  = True if row['required'] and row['required'] == 1 else False
+            plugin_id = typing.cast(PluginID, row['plugin'])
 
-            # Plugin ID is in 'plugin' column for room_plugins table
-            plugin_id = row['plugin']
+            # Apply the required flag (note: Plugin ID FK is located in the 'plugin' column for the room_plugins table)
             if plugin_id in result:
-                required = required or result[plugin_id]
-            result[plugin_id] = required
+                result[plugin_id].required |= required
+            else:
+                # This plugin is only applicable in this room, we'll lookup its human readable name
+                name_lookup       = "SELECT name, required FROM plugins WHERE id = :id AND  " + where_clause
+                name_row          = query(name_lookup, id=plugin_id).first()
+                result[plugin_id] = PluginInfo(name=name_row['name'] if name_row else "", required=required)
     return result
 
 # Commands from SOGS/uwsgi
 @needs_app_context
 @log_exceptions
-def message_request(m: oxenmq.Message):
-    """
-    Called by SOGS when a user sends or edits a message
-    TODO: handle edits
-    """
+def message_request(m: oxenmq.Message) -> Optional[bytes]:
+    """Called by SOGS when a user sends a message to a room to executed pre/post on-message hooks"""
     app.logger.debug("message_request called on mule")
 
     responded = False
     try:
-        request_raw: Dict[bytes, bt_value]            = bt_deserialize(m.dataview()[0])
-        request:     sogs.plugin.FilterMessageRequest = sogs.plugin.FilterMessageRequest.from_bencode(request_raw)
+        # Run message filtering hooks
+        req:         sogs.types.MessageRequest  = sogs.types.MessageRequest.from_dict(bt_deserialize(m.dataview()[0]))
+        filter_resp: sogs.plugin.FilterResponse = plugin_filter_message(m.data(), room_id=req.room_id)
+        if filter_resp == sogs.plugin.FilterResponse.Reject:
+            return bt_serialize({b"error": "Message rejected by filter plugin(s)"})
 
-        filter_resp = plugin_filter_message(m.data(), room_id=request.room_id)
-        if filter_resp == "REJECT":
-            return bt_serialize({"error": "Message rejected by filter plugin(s)"})
-        elif filter_resp == "SILENT":
-            request_raw[b"filtered"] = True
+        if filter_resp == sogs.plugin.FilterResponse.Silent:
+            req.filtered = True
 
-        # TODO: Make the command trigger character configurable
-        command = ""
-        msg     = Post(raw=request.message_data)
-        if msg.text.startswith('/'):
+        # Regenerate the payload (w/ filtered now set, if it was filtered)
+        raw_payload: list[bytes] = m.data()
+        if req.filtered:
+            raw_payload[0] = req.to_bencode()
+
+        # TODO: Make the command trigger character configurable. IMO this is not important, infact
+        # it's probably better that it's a fixed character and is predictable across all SOGS and
+        # enforces a consistent "design language".
+        command       = ""
+        msg           = Post(raw=req.message_data)
+        msg_text: str = typing.cast(str, msg.text)
+        if msg_text.startswith('/'):
             app.logger.debug(f"Processing slash command, pre-command phase")
-            command = msg.text.split(' ')[0]
+            command = msg_text.split(' ')[0]
 
-        if command:
-            if not plugin_pre_message_commands(m.data(), request_raw, command):
-                return bt_serialize({"ok": True})
-
-        # TODO: pre-insertion plugin command, e.g. not a command and passed all filters,
-        #       but for some other reason we don't want to insert it (or not yet).
+        # Run pre-message hooks to check if the message is allowed to be posted in the room
+        if len(command):
+            if not plugin_pre_message_commands(raw_payload, command):
+                return bt_serialize({b"ok": True})
 
         # TODO: handle edit message
-        room = Room(id=request.room_id)
-        msg_id = room.insert_message(request_raw)
-        responded = True
+        room              = Room(id=req.room_id)
+        msg_id: MessageID = room.insert_message(req)
+        responded         = True
+
         # manually reply so we don't hold up the worker longer than necessary
-        m.reply(bt_serialize({"ok": True, "msg_id": msg_id}))
+        m.reply(bt_serialize({b"ok": True, b"msg_id": msg_id}))
 
-        plugin_post_message_commands(m.data(), request_raw, command)
+        # Run post-message hooks that can react to the _act_ of a message being posted into the room
+        plugin_post_message_commands(raw_payload, command)
         on_message_posted(msg_id)
-
-        return
     except Exception as e:
         app.logger.warning(f"Exception handling new/edited message from sogs: {e}")
         if not responded:
-            return bt_serialize({"error": f"{e}"})
+            return bt_serialize({b"error": f"{e}"})
 
 
 @needs_app_context
@@ -250,12 +251,11 @@ def request_read(m: oxenmq.Message):
 
     try:
         app.logger.debug(f"Giving command 'request_read' to plugin (id={plugin_id})")
-        resp = o.omq.request_future(
-            plugin_conns[plugin_id], "plugin.request_read", m.data(), request_timeout=timedelta(seconds=1)
+        _ = o.omq.request_future(
+            plugin_conns[plugin_id], "plugin.request_read", data=m.data(), request_timeout=timedelta(seconds=1)
         ).get()
     except TimeoutError as e:
-        app.logger.warning(f"Timeout from plugin (id={plugin_id}) handling request_read")
-        pass
+        app.logger.warning(f"Timeout from plugin (id={plugin_id}) handling request_read: {e}")
     except Exception:
         # TODO: Should this fail the whole command?
         pass
@@ -283,7 +283,7 @@ def message_edited(m: oxenmq.Message):
 
 
 @log_exceptions
-def plugin_filter_message(data: bytes, room_id: int) -> sogs.plugin.FilterResponse:
+def plugin_filter_message(data: List[bytes], room_id: int) -> sogs.plugin.FilterResponse:
     plugin_ids: Optional[Dict[PluginID, PluginInfo]] = get_relevant_plugins("approver = 1", room_id=room_id)
     if not plugin_ids:
         return sogs.plugin.FilterResponse.Accept
@@ -299,10 +299,10 @@ def plugin_filter_message(data: bytes, room_id: int) -> sogs.plugin.FilterRespon
     # Submit the message to the plugins and collect the async handles
     pending_requests: List[oxenmq.ResultFuture] = []
     for id in plugin_ids:
-        pending_requests.append(o.omq.request_future(plugin_conns[id],
-                                                     "plugin.filter_message",
-                                                     data,
-                                                     timeout=timedelta(seconds=1).seconds))
+        pending_requests.append(o.omq.request_future(conn    = plugin_conns[id],
+                                                     cmd     = "plugin.filter_message",
+                                                     data    = data,
+                                                     timeout = timedelta(seconds=1).seconds))
 
     # Await all the async handles
     silent = False
@@ -329,7 +329,7 @@ def plugin_filter_message(data: bytes, room_id: int) -> sogs.plugin.FilterRespon
 
 @needs_app_context
 @log_exceptions
-def plugin_message_commands(data, deserialized_data, command, pre_command: bool):
+def _plugin_message_commands(data: List[bytes], command: str, pre_command: bool) -> bool:
     """
     pass command to plugins registered for that command, in order.
     Plugin returns True if we should continue handling the message, i.e. either that plugin ignored it
@@ -352,56 +352,45 @@ def plugin_message_commands(data, deserialized_data, command, pre_command: bool)
 
     for plugin_id in commands_container[command]:
         if plugin_id not in plugin_conns:
-            app.logger.warning(
-                f"Plugin (id={plugin_id}) registered to handle {command_type} {command} "
-                f"but no longer in plugin_conns, somehow."
-            )
+            app.logger.warning(f"Plugin (id={plugin_id}) registered to handle {command_type} {command} but no longer in plugin_conns, somehow.")
             continue
+
+        resp: list[bytes] = []
         try:
             app.logger.debug(f"Giving {command_type} {command} to plugin (id={plugin_id})")
             resp = o.omq.request_future(
-                plugin_conns[plugin_id],
-                f"plugin.{command_type}",
-                data,
-                request_timeout=timedelta(seconds=0.2),
+                conn            = plugin_conns[plugin_id],
+                cmd             = f"plugin.{command_type}",
+                data            = data,
+                request_timeout = timedelta(seconds=0.2),
             ).get()
         except TimeoutError as e:
             app.logger.warning(f"Timeout from plugin (id={plugin_id}) handling {command_type} {command}")
             if pre_command:
                 return False
         except Exception as e:
-            app.logger.warning(
-                f"Error from plugin (id={plugin_id}) handling {command_type} {command}, error: {e}"
-            )
+            app.logger.warning(f"Error from plugin (id={plugin_id}) handling {command_type} {command}, error: {e}")
             if pre_command:
                 return False
 
-        should_continue = bt_deserialize(resp[0])
+        should_continue = typing.cast(bool, bt_deserialize(resp[0]))
         app.logger.debug(f"{command_type} {command} response from plugin: {should_continue}")
-        if pre_command and not should_continue:
+        if pre_command and should_continue == False:
             return False
 
     return True
 
 
-def plugin_pre_message_commands(data, deserialized_data, command):
-    return plugin_message_commands(data, deserialized_data, command, True)
+def plugin_pre_message_commands(data: List[bytes], command: str) -> bool:
+    return _plugin_message_commands(data, command, pre_command=True)
 
-
-def plugin_post_message_commands(data, deserialized_data, command):
-    return plugin_message_commands(data, deserialized_data, command, False)
-
+def plugin_post_message_commands(data: List[bytes], command: str) -> bool:
+    return _plugin_message_commands(data, command, pre_command=False)
 
 def setup_omq():
-    omq = o.omq
-
     app.logger.debug("Mule setting up omq")
-    if isinstance(config.OMQ_LISTEN, list):
-        listen = config.OMQ_LISTEN
-    elif config.OMQ_LISTEN is None:
-        listen = []
-    else:
-        listen = [config.OMQ_LISTEN]
+    omq: oxenmq.OxenMQ = o.omq
+    listen             = config.OMQ_LISTEN if isinstance(config.OMQ_LISTEN, list) else [config.OMQ_LISTEN]
     for addr in listen:
         omq.listen(addr, curve=True, allow_connection=allow_conn)
         app.logger.info(f"OxenMQ listening on {addr}")
@@ -410,7 +399,7 @@ def setup_omq():
     omq.listen(config.OMQ_INTERNAL, curve=False, allow_connection=admin_conn)
 
     # Periodic database cleanup timer:
-    omq.add_timer(cleanup.cleanup, timedelta(seconds=cleanup.INTERVAL))
+    _ = omq.add_timer(job=cleanup.cleanup_no_ret, interval=timedelta(seconds=cleanup.INTERVAL))
 
     # Commands other workers can send to us, e.g. for notifications of activity for us to know about
     plugin = omq.add_category("plugin", access_level=oxenmq.AuthLevel.basic)
@@ -630,9 +619,9 @@ def plugin_delete_message(m: oxenmq.Message):
         with db.transaction():
             rowcount = query(
                 """DELETE FROM message_details WHERE id IN :msg_ids AND "user" = :user""",
-                msg_ids=msg_ids,
-                user=metadata.user.id,
-                bind_expanding=['msg_ids'],
+                msg_ids        = msg_ids,
+                user           = metadata.user.id,
+                bind_expanding = ['msg_ids'],
             )
             if rowcount:
                 success = True
@@ -642,26 +631,23 @@ def plugin_delete_message(m: oxenmq.Message):
 
     if not success:
         app.logger.warning(f"Failed to delete message with ids {msg_ids}")
-        return bt_serialize({'error': 'Message deletion failed due to DB error'})
-    return bt_serialize({'status': 'OK'})
+        return bt_serialize({b'error': 'Message deletion failed due to DB error'})
+    return bt_serialize({b'status': 'OK'})
 
 @needs_app_context
 @log_exceptions
 def plugin_insert_message(m: oxenmq.Message):
     req = bt_deserialize(m.dataview()[0])
 
-    # TODO: confirm plugin sessid is 25-blinded of plugin omq auth key?
-    sender = User(session_id=req[b'session_id'].decode('ascii'), autovivify=True, touch=False)
-    whisper_target = None
+    sender                          = User(session_id=req[b'session_id'].decode('ascii'), autovivify=True, touch=False)
+    whisper_target: Optional[bytes] = None
     if b'whisper_target' in req:
         try:
-            whisper_target = User(
-                session_id=req[b'whisper_target'].decode('ascii'), autovivify=False
-            )
+            whisper_target = User(session_id=req[b'whisper_target'].decode('ascii'), autovivify=False)
         except Exception:
             # invalid whisper target, plugin messed up?
             app.logger.warning(f"Plugin attempted to whisper an inexistent user...")
-            return bt_serialize({'error': "NoSuchUser"})
+            return bt_serialize({b'error': "NoSuchUser"})
 
     whisper_mods = req[b'whisper_mods']
     with db.transaction():
@@ -669,7 +655,7 @@ def plugin_insert_message(m: oxenmq.Message):
             room = Room(token=req[b"room_token"].decode("ascii"))
         except Exception:
             app.logger.warning(f"Plugin attempted to post message to inexistent room...")
-            return bt_serialize({'error': "NoSuchRoom"})
+            return bt_serialize({b'error': "NoSuchRoom"})
 
         sig = req[b'sig']
         msg = req[b'message']
@@ -709,7 +695,7 @@ def plugin_insert_message(m: oxenmq.Message):
             app.logger.debug(f"associating files {req[b'files']} with msg {msg_id}")
             room._own_files(msg_id, req[b"files"], sender)
 
-        if b'no_plugins' not in req:
+        if req[b'relay_to_plugins']:
             on_message_posted(msg_id)
 
         return bt_serialize({'msg_id': msg_id})
@@ -739,9 +725,11 @@ def plugin_upload_file(m: oxenmq.Message):
 
 @needs_app_context
 @log_exceptions
-def on_message_posted(msg_id):
+def on_message_posted(msg_id: MessageID):
     app.logger.warn(f"Calling on_message_posted with id={msg_id}")
-    msg = None
+
+    # Fetch the message by message ID
+    msg: Optional[Dict[bytes, bt_value]] = None
     for row in query(
         f"""
         SELECT message_details.*, uroom.token AS room_token FROM message_details
@@ -750,82 +738,96 @@ def on_message_posted(msg_id):
         """,
         msg_id=msg_id,
     ):
-        app.logger.warn("Message details:")
+        app.logger.debug("Message details:")
+        msg = {}
         for key in row.keys():
-            app.logger.warn(f"{key}: {row[key]}")
-        msg = {x: row[x] for x in row.keys()}
+            app.logger.debug(f"{key}: {row[key]}")
+            key_bytes: bytes = typing.cast(str, key).encode()
+            if row[key]:
+                msg[key_bytes] = row[key]
+            else:
+                msg[key_bytes] = ""
 
     if msg is None:
         return
 
-    for key in msg.keys():
-        if msg[key] is None:
-            msg[key] = ""
-    msg['posted'] = str(msg['posted'])
+    # Serialize and send
+    plugin_ids: Optional[Dict[PluginID, PluginInfo]] = get_relevant_plugins("subscribe = 1", room_id=typing.cast(int, msg[b'room']))
+    if plugin_ids:
+        msg[b'posted']    = str(msg[b'posted'])
+        serialized: bytes = bt_serialize(msg)
 
-    plugin_ids = get_relevant_plugins("subscribe = 1", room_id=msg['room'])
-    serialized = bt_serialize(msg)
-    for plugin_id in plugin_ids.keys():
-        o.omq.send(plugin_conns[plugin_id], "plugin.message_posted", serialized)
+        # Relay message to plugin's post message hooks
+        for plugin_id in plugin_ids.keys():
+            o.omq.send(plugin_conns[plugin_id], "plugin.message_posted", serialized)
 
 
 @needs_app_context
 @log_exceptions
-def plugin_post_reactions(m: oxenmq.Message):
-    """
-    Post one or more reactions from this plugin to a single message.
-    """
+def plugin_post_reactions(m: oxenmq.Message) -> bytes:
+    """Post one or more reactions from this plugin to a single message."""
+    metadata: Optional[PluginMetadata] = _require_plugin_conn_info(m.conn, need_user=True, msg_prefix="Failed to post reaction")
+    if not metadata:
+        return bt_serialize({b'error': 'Plugin did not register itself with a hello handshake'})
+    if not metadata.user:
+        return bt_serialize({b'error': f'Plugin {metadata.name} (id={metadata.id}) did not register with a Session ID'})
+
     try:
         req = bt_deserialize(m.dataview()[0])
         for key in (b'room_token', b'msg_id', b'reactions'):
             if not key in req:
-                return bt_serialize({'error': f"missing parameter {key}"})
+                return bt_serialize({b'error': f"missing parameter {key}"})
 
         room = Room(token=req[b'room_token'].decode('ascii'))
         for reaction in req[b'reactions']:
             app.logger.debug(f"plugin_post_reactions, posting reaction to room")
             room.add_reaction(
-                plugin_conn_info[m.conn]['user'],
-                req[b'msg_id'],
-                reaction.decode('utf-8'),
-                send_to_plugins=False,
+                user             = metadata.user,
+                msg_id           = typing.cast(int, req[b'msg_id']),
+                reaction         = reaction.decode('utf-8'),
+                relay_to_plugins = False,
             )
     except NoSuchRoom as e:
         app.logger.warning(f"Error: {e}")
-        return bt_serialize({'error': 'NoSuchRoom'})
+        return bt_serialize({b'error': 'NoSuchRoom'})
     except Exception as e:
         app.logger.warning(f"Error: {e}")
-        return bt_serialize({'error': 'Something getting wrong'})
-    return bt_serialize({'status': 'OK'})
+        return bt_serialize({b'error': 'Something getting wrong'})
+
+    return bt_serialize({b'status': 'OK'})
 
 
 @needs_app_context
 @log_exceptions
 def plugin_remove_reactions(m: oxenmq.Message):
-    """
-    Remove all other reactions not from this plugin to a single message.
-    """
+    """Remove all other reactions not from this plugin to a single message."""
+    metadata: Optional[PluginMetadata] = _require_plugin_conn_info(m.conn, need_user=True, msg_prefix="Failed to post reaction")
+    if not metadata:
+        return bt_serialize({b'error': 'Plugin did not register itself with a hello handshake'})
+    if not metadata.user:
+        return bt_serialize({b'error': f'Plugin {metadata.name} (id={metadata.id}) did not register with a Session ID'})
+
     try:
         req = bt_deserialize(m.dataview()[0])
         for key in (b'room_token', b'msg_id', b'reactions'):
             if not key in req:
-                return bt_serialize({'error': f"missing parameter {key}"})
+                return bt_serialize({b'error': f"missing parameter {key}"})
 
         room = Room(token=req[b'room_token'].decode('ascii'))
         for reaction in req[b'reactions']:
             app.logger.debug(f"plugin_remove_reactions, removing reactions from room")
             room.delete_other_reactions(
-                plugin_conn_info[m.conn]['user'],
-                req[b'msg_id'],
-                reaction.decode('utf-8'),
+                user     = metadata.user,
+                msg_id   = typing.cast(int, req[b'msg_id']),
+                reaction = reaction.decode('utf-8'),
             )
     except NoSuchRoom as e:
         app.logger.warning(f"Error: {e}")
-        return bt_serialize({'error': 'NoSuchRoom'})
+        return bt_serialize({b'error': 'NoSuchRoom'})
     except Exception as e:
         app.logger.warning(f"Error: {e}")
-        return bt_serialize({'error': 'Something getting wrong'})
-    return bt_serialize({'status': 'OK'})
+        return bt_serialize({b'error': 'Something getting wrong'})
+    return bt_serialize({b'status': 'OK'})
 
 
 # TODO: this should be usable for reaction added/removed, not just added

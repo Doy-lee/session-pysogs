@@ -8,19 +8,8 @@ from flask import request, abort, Response
 import json
 from typing import Dict, List, Tuple, Union
 
-# Represents the different variants of data types that a primitive bencoded type can hold. These
-# values are produced and consumed by the module oxenc's bt_serialize/bt_deserialize functions.
-bt_value = Union[
-    int,
-    bytes,
-    str,
-    List["bt_value"],
-    Dict[Union[bytes, str], "bt_value"],
-]
-
 def encode_base64(data: bytes):
     return base64.b64encode(data).decode()
-
 
 def decode_base64(b64: str):
     """Decodes a base64 value with or without padding."""

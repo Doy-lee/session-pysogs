@@ -2,6 +2,7 @@ import dataclasses
 import json
 import typing
 from sogs.plugin import *
+from sogs.types import bt_value
 
 @dataclasses.dataclass
 class SlashTestPlugin(Plugin):
@@ -43,7 +44,7 @@ class SlashTestPlugin(Plugin):
         msg_id = self.post_message(
             room_token,
             "Please work ffs!",
-            no_plugins=False,
+            relay_to_plugins=True,
             attachments_metadata=[file_meta,],
         )
 

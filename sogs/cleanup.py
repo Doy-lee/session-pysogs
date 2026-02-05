@@ -28,6 +28,8 @@ def cleanup():
             app.logger.warning(f"Periodic database cleanup failed: {e}")
             return None
 
+def cleanup_no_ret():
+    _ = cleanup()
 
 def prune_files():
     now = time.time()
