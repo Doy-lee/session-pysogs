@@ -2,6 +2,8 @@ import dataclasses
 import typing
 import oxenc
 import oxenmq
+import typing_extensions
+
 from time import time
 from typing import Optional
 from sogs.types import bt_value, SessionID, RoomToken, MessageID
@@ -52,7 +54,8 @@ class PermissionPlugin(Plugin):
 
         return oxenc.bt_serialize("OK")
 
-    def reaction_posted(self, m: oxenmq.Message):
+    @typing_extensions.override
+    def on_reaction_posted(self, m: oxenmq.Message):
         req: Dict[bytes, bt_value] = oxenc.bt_deserialize(m.dataview()[0])
         print(f"reaction_posted, req = {req}")
         msg_id: MessageID = typing.cast(int, req[b'msg_id'])

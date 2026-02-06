@@ -90,14 +90,13 @@ def send_mule_request(command, *args, prefix: Optional[str] ="worker.", timeout=
         )
 
 
-def synchronous_mule_request(command, *args, prefix="worker.", timeout=timedelta(seconds=1)):
+def send_mule_request_synchronous(command, *args, prefix: Optional[str] ="worker.", timeout=timedelta(seconds=1)):
     """
     Sends a request to the mule from a worker and wait for the response.  The request will
     be prefixed with "worker." (unless overridden).
 
     Any args will be bt-serialized and send as message parts.
     """
-
     try:
         fut = send_mule_request(command, *args, prefix=prefix, timeout=timeout)
         if not fut:
@@ -105,6 +104,5 @@ def synchronous_mule_request(command, *args, prefix="worker.", timeout=timedelta
         return fut.get()
     except Exception as e:
         from .web import app  # Imported here to avoid circular import
-
         app.logger.debug(f"Synchronous omq request failed with exception: {e}")
         raise e

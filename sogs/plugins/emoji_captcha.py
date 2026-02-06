@@ -21,8 +21,8 @@ Architecture:
   - Periodically gets invoked by SOGS via the subscription with users that are requesting read
     access where the CAPTCHA state machine for that user is iterated (whispering instructions to the
     user, uploading and sending the user the CAPTCHA...).
-  - Overrides the emoji reaction_posted() hook to get notified of when the user reacts to a CAPTCHA
-    message to provide an answer to the CAPTCHA that is then checked.
+  - Overrides the emoji on_reaction_posted() hook to get notified of when the user reacts to a
+    CAPTCHA message to provide an answer to the CAPTCHA that is then checked.
 
 Config file (.ini):
   Configure how the Emoji CAPTCHA plugin's behaviour and how it connects to the SOGS server by
@@ -77,10 +77,11 @@ import math
 import os
 import random
 import typing
+import typing_extensions
 
 from time               import time
 from sogs.plugin        import *
-from sogs.types         import SessionID, RoomToken, MessageID, TimestampS, bt_value
+from sogs.types         import SessionID, RoomToken, MessageID, TimestampS, bt_value, ReactionPosted
 from concurrent.futures import ThreadPoolExecutor
 from PIL                import Image,  ImageDraw, ImageFont
 from typing             import Dict, List, Optional, Tuple
@@ -585,8 +586,12 @@ class EmojiCaptchaPlugin(Plugin):
         # community. In this hook we check if the user has solved a captcha before and lets the user
         # read or otherwise require them to solve captcha to proceed.
         self.register_request_read_handler(self.handle_request_read)
-        log.info("Plugin initialised: refresh {}s; retry {}s; write {}s; captcha limit {}"
-                 .format(self.refresh_timeout_s, self.retry_timeout_s, self.write_timeout_s, self.retry_limit))
+        log.info("Plugin initialised: refresh {}s; retry {}s; write {}s; captcha limit {}; x25519 pubkey {}"
+                 .format(self.refresh_timeout_s,
+                         self.retry_timeout_s,
+                         self.write_timeout_s,
+                         self.retry_limit,
+                         self.x_pubkey.hex()))
 
     def get_user(self, session_id: bytes, room_token: bytes) -> Optional[UserCaptchaState]:
         result = None
@@ -803,42 +808,29 @@ class EmojiCaptchaPlugin(Plugin):
 
         return oxenc.bt_serialize("OK")
 
-    def reaction_posted(self, m: oxenmq.Message):
+    @typing_extensions.override
+    def on_reaction_posted(self, m: oxenmq.Message):
         """Process reactions on CAPTCHA messages (answer, refresh, or incorrect)."""
-
-        # Example reaction data:
-        #  {b'is_admin': 0, b'is_mod': 0, b'msg_id': 8, b'reaction': b'\xf0\x9f\x94\x84',
-        #   b'room_id': 1, b'room_name': b'foobar2', b'room_token': b'foobar2',
-        #   b'session_id': b'1500784b7c2096f6ed811b25c53a63e551954ee6778c7ae4437cb01c4b01fb4a09',
-        #   b'user_id': 3}
-        req: Dict[bytes, bt_value] = oxenc.bt_deserialize(m.dataview()[0])
-
-        msg_id            = typing.cast(MessageID, req[b'msg_id'])
-        session_id: bytes = bytes.fromhex(typing.cast(bytes, req[b'session_id']).decode('utf-8'))
-        user_id:    int   = typing.cast(int, req[b'user_id'])
-        room_token        = typing.cast(bytes, req[b'room_token'])
-        room_name:  str   = typing.cast(bytes, req[b'room_name']).decode('utf-8')
-        reaction:   str   = typing.cast(bytes, req[b'reaction']).decode('utf-8')
-
-        user: Optional[UserCaptchaState] = self.get_user(session_id, room_token)
+        req = ReactionPosted.from_bencode(m.dataview()[0])
+        user: Optional[UserCaptchaState] = self.get_user(req.session_id, req.room_token)
         if not user:
-            log.warning(f'Reaction {reaction} from unknown user 0x{session_id.hex()} in room {room_token}')
+            log.warning(f'Reaction {req.reaction} from unknown user 0x{req.session_id.hex()} in room {req.room_token}')
             return
 
-        if user.posted_captcha_msg_id == msg_id and user.posted_captcha:
-            if reaction == user.posted_captcha.answer:
+        if user.posted_captcha_msg_id == req.msg_id and user.posted_captcha:
+            if req.reaction == user.posted_captcha.answer:
                 user.captcha_solved_grant_access_at_ts = time() + self.write_timeout_s
                 user.captcha_state                     = CaptchaState.Solved
-                log.info(f"Access granted to 0x{session_id.hex()} in room '{room_token}'")
-            elif reaction == self.refresh_emoji:
-                user.reactions_to_delete_on_tick.append(msg_id) # Enqueue refresh emoji to be deleted
+                log.info(f"Access granted to 0x{req.session_id.hex()} in room '{req.room_token}'")
+            elif req.reaction == self.refresh_emoji:
+                user.reactions_to_delete_on_tick.append(req.msg_id) # Enqueue refresh emoji to be deleted
                 user.refresh_state = RefreshState.Request
-                log.debug(f"Refresh reacted by 0x{session_id.hex()} in room '{room_token}'")
+                log.debug(f"Refresh reacted by 0x{req.session_id.hex()} in room '{req.room_token}'")
             else:
                 user.captcha_state = CaptchaState.IncorrectAnswer
-                log.debug(f"Incorrect emoji {reaction} reacted by 0x{session_id.hex()} in room '{room_token}')")
+                log.debug(f"Incorrect emoji {req.reaction} reacted by 0x{req.session_id.hex()} in room '{req.room_token}'")
 
-            _ = self.tick(room_token=room_token, user_id=user_id, session_id=session_id, room_name=room_name);
+            _ = self.tick(room_token=req.room_token, user_id=req.user_id, session_id=req.session_id, room_name=req.room_name)
 
 def entry_point(ini_path: str = 'emoji_captcha.ini'):
     import argparse

@@ -9,21 +9,13 @@ import typing_extensions
 import datetime
 import configparser
 
-from .types import SessionID, MessageID, bt_value, PluginInsertMessage, RoomAddPostRequest
+from .types import SessionID, MessageID, bt_value, PluginInsertMessage, RoomAddPostRequest, ReactionPosted
 from typing          import Callable, Dict, List, Optional, Union
 from datetime        import timedelta
 from sogs.model.post import Post
 
-class LogFormatter(logging.Formatter):
-    @typing_extensions.override
-    def formatTime(self, record: logging.LogRecord, datefmt: Optional[str] = None) -> str:
-        dt     = datetime.datetime.fromtimestamp(record.created)
-        result = dt.strftime('%y-%m-%d %H:%M:%S.%f')[:-3]
-        return result
-
-log_formatter = LogFormatter('%(asctime)s %(levelname)s %(name)s %(message)s')
 console_log_handler = logging.StreamHandler()
-console_log_handler.setFormatter(log_formatter)
+console_log_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s'))
 
 log = logging.Logger('PLUGIN')
 log.addHandler(console_log_handler)
@@ -247,7 +239,7 @@ class Plugin:
         cat      = self.omq.add_category("plugin", access_level=oxenmq.AuthLevel.none)
         cat.add_request_command("filter_message",       self.filter_message)
         cat.add_command        ("message_posted",       self.message_posted)
-        cat.add_command        ("reaction_posted",      self.reaction_posted)
+        cat.add_command        ("on_reaction_posted",   self.on_reaction_posted)
         cat.add_request_command("pre_message_command",  self.pre_message_command)
         cat.add_request_command("post_message_command", self.post_message_command)
         cat.add_request_command("request_read",         self.request_read)
@@ -688,20 +680,11 @@ class Plugin:
             print(f"upload_file exception: {e}")
             return None
 
-    def message_posted(self, m: oxenmq.Message):
-        print(f"message_posted called")
-        try:
-            msg = oxenc.bt_deserialize(m.dataview()[0])
-            print(f"message: {msg}")
-        except Exception as e:
-            print(f"Exception: {e}")
+    def message_posted(self, m: oxenmq.Message):  # pyright: ignore[reportUnusedParameter]
+        """Handle message posted events from SOGS, override this in your plugin to customise the behaviour"""
+        pass
 
-    def reaction_posted(self, m: oxenmq.Message):
-        print(f"reaction_posted called")
-        try:
-            reaction = oxenc.bt_deserialize(m.dataview()[0])
-            print(f"reaction: {reaction}")
-        except Exception as e:
-            print(f"Exception: {e}")
-
+    def on_reaction_posted(self, m: oxenmq.Message):  # pyright: ignore[reportUnusedParameter]
+        """Handle reaction posted events from SOGS, override this in your plugin to customise the behaviour"""
+        _ = ReactionPosted.from_bencode(m.dataview()[0]) # Parse payload and use as needed
 

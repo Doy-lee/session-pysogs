@@ -40,12 +40,14 @@ plugin_conns: Dict[PluginID, oxenmq.ConnectionID] = {}
 
 @dataclasses.dataclass
 class PluginMetadata:
-    id:   PluginID    = 0
-    name: str         = ''
+    id:            PluginID       = 0
+    name:          str            = ''
+    x25519_pubkey: bytes          = b''
+
     # A plugin manifests itself as a user in the community. When a plugin identifies itself to the
     # SOGS (e.g. starts hello handshake), the user account for the plugin gets added as a
     # moderator/admin. This field is the user info for said user representing the plugin.
-    user: Optional[User] = None
+    user:          Optional[User] = None
 
     def describe_str(self) -> str:
         result = f"Plugin '{self.name}' (id={self.id}"
@@ -65,8 +67,9 @@ plugin_post_commands: Dict[str, Set[PluginID]] = {}
 
 @dataclasses.dataclass
 class PluginInfo:
-    required: bool = False
-    name:     str  = ''
+    required:      bool  = False
+    name:          str   = ''
+    x25519_pubkey: bytes = b''
 
 # not changing the keys, since this is just for fixing the values if they
 # need to be str and not bytes
@@ -126,7 +129,7 @@ def inproc_fail(connid: oxenmq.ConnectionID, reason: str):  # pyright: ignore[re
 
 @needs_app_context
 @log_exceptions
-def get_relevant_plugins(where_clause: str, room_id: Optional[int] = None, room_token: Optional[str] = None) -> Optional[Dict[PluginID, PluginInfo]]:
+def get_relevant_plugins(where_clause: str, room_id: Optional[int] = None, room_token: Optional[str] = None) -> Dict[PluginID, PluginInfo]:
     """
     Retrieve plugins that match the given filter criteria from both global and room-specific contexts.
 
@@ -150,22 +153,20 @@ def get_relevant_plugins(where_clause: str, room_id: Optional[int] = None, room_
     """
     result: Dict[PluginID, PluginInfo] = {}
     with db.transaction():
-        # Query global plugins that match the where_clause
-        query_str = "SELECT id, name, required FROM plugins WHERE global = 1 AND " + where_clause
-        rows      = query(query_str)
-        for row in rows:
-            required = False
-            if row['required'] and row['required'] == 1:
-                required = True
-            result[row['id']] = PluginInfo(required=required, name=row['name'])
-
         # Resolve room_token to room_id if needed
         if room_token and not room_id:
             id_row = query("SELECT id FROM rooms WHERE token = :token", token=room_token).first()
             if id_row is None:
                 app.logger.warning(f"filtering message for inexistent room with token: \"{room_token}\"??")
-                return None
+                return result
             room_id = typing.cast(int, id_row['id'])
+
+        # Query global plugins that match the where_clause
+        query_str = "SELECT id, name, required, auth_key FROM plugins WHERE global = 1 AND " + where_clause
+        rows      = query(query_str)
+        for row in rows:
+            required          = True if row['required'] and row['required'] == 1 else False
+            result[row['id']] = PluginInfo(required=required, name=row['name'], x25519_pubkey=row['auth_key'])
 
         # Query room-specific plugins and merge with global results
         query_str = "SELECT plugin, required FROM room_plugins WHERE room = :room_id AND " + where_clause
@@ -276,8 +277,9 @@ def request_read(m: oxenmq.Message):
     return retval
 
 
+# TODO: this should be usable for reaction added/removed, not just added
 @log_exceptions
-def reaction_posted(m: oxenmq.Message):
+def plugin_on_reaction_posted(m: oxenmq.Message):
     on_reaction_posted(m)
 
 
@@ -297,8 +299,8 @@ def message_edited(m: oxenmq.Message):
 
 @log_exceptions
 def plugin_filter_message(req: sogs.types.RoomAddPostRequest) -> sogs.plugin.FilterResponse:
-    plugin_ids: Optional[Dict[PluginID, PluginInfo]] = get_relevant_plugins("approver = 1", room_id=req.room_id)
-    if not plugin_ids:
+    plugin_ids: Dict[PluginID, PluginInfo] = get_relevant_plugins("approver = 1", room_id=req.room_id)
+    if len(plugin_ids) == 0:
         return sogs.plugin.FilterResponse.Accept
 
     app.logger.debug(f"Requesting message approval from {len(plugin_ids)} plugins.")
@@ -427,7 +429,7 @@ def setup_omq():
     worker.add_request_command("request_read", request_read)
     worker.add_command("messages_deleted", messages_deleted)
     worker.add_command("message_edited", message_edited)
-    worker.add_command("reaction_posted", reaction_posted)
+    worker.add_command("on_reaction_posted", plugin_on_reaction_posted)
 
     app.logger.debug("Mule starting omq")
     omq.start()
@@ -459,6 +461,7 @@ def plugin_hello(m: oxenmq.Message):
 
         metadata: PluginMetadata = plugin_conn_info[m.conn]
         metadata.id              = typing.cast(int, row['id'])
+        metadata.x25519_pubkey   = m.conn.pubkey
         try:
             if len(m.dataview()):
                 session_id: str = bt_deserialize(m.dataview()[0]).decode('ascii')
@@ -718,7 +721,7 @@ def plugin_upload_file(m: oxenmq.Message):
         file_id = room.upload_file(content, metadata.user, filename=req[b'filename'].decode('utf-8'), lifetime=3600.0)
 
         url = f"{config.URL_BASE}/{room.token}/file/{file_id}"
-        return bt_serialize({b'file_id': file_id, "url": url})
+        return bt_serialize({b'file_id': file_id, b"url": url})
 
 @needs_app_context
 @log_exceptions
@@ -749,8 +752,8 @@ def _on_message_posted(msg_id: MessageID):
         return
 
     # Serialize and send
-    plugin_ids: Optional[Dict[PluginID, PluginInfo]] = get_relevant_plugins("subscribe = 1", room_id=typing.cast(int, msg[b'room']))
-    if plugin_ids:
+    plugin_ids: Dict[PluginID, PluginInfo] = get_relevant_plugins("subscribe = 1", room_id=typing.cast(int, msg[b'room']))
+    if len(plugin_ids) == 0:
         msg[b'posted']    = str(msg[b'posted'])
         serialized: bytes = bt_serialize(msg)
 
@@ -831,15 +834,16 @@ def plugin_remove_reactions(m: oxenmq.Message):
 @needs_app_context
 @log_exceptions
 def on_reaction_posted(m: oxenmq.Message):
-    msg_dict = bt_deserialize(m.dataview()[0])
-    app.logger.warn(f"on_reaction_posted, reaction:\n{msg_dict}")
-    plugin_ids: Dict[PluginID, PluginInfo] = get_relevant_plugins("subscribe = 1", room_id=msg_dict[b'room_id'])
-    for key in plugin_ids:
-        if key in plugin_conns:
-            plugin_info: PluginInfo = plugin_ids[key]
-            app.logger.warn(f"Sending reaction to plugin '{plugin_info.name}' (id={key}, required={plugin_info.required})")
-            o.omq.send(plugin_conns[key], "plugin.reaction_posted", *m.data())
+    req_raw: List[bytes] = m.data()
+    req                  = sogs.types.ReactionPosted.from_bencode(req_raw[0])
+    app.logger.debug(f"Reaction posted: {req}")
 
+    plugin_ids: Dict[PluginID, PluginInfo] = get_relevant_plugins("subscribe = 1", room_id=req.room_id)
+    for id in plugin_ids:
+        plugin_info: PluginInfo = plugin_ids[id]
+        if id in plugin_conns:
+            app.logger.debug(f"Sending reaction to plugin '{plugin_info.name}' (id={id}, required={plugin_info.required})")
+            o.omq.send(plugin_conns[id], "plugin.on_reaction_posted", *req_raw)
 
 # NOTE: this should be a list of IDs; if the plugin cares, it will have stored them.
 #       or can fetch them

@@ -117,9 +117,10 @@ class PluginInsertMessage:
     message_data:     bytes
     sig:              bytes
     whisper_mods:     bool
-    whisper_to:       Optional[int] = None  # User ID that this message was whispered to
-    attachment_ids:   List[int]     = dataclasses.field(default_factory=list)
-    relay_to_plugins: bool          = False
+    alt_id:           Optional[SessionID] = None  # 15-blinded x25519 pubkey as raw 33 bytes
+    whisper_to:       Optional[int]       = None  # User ID that this message was whispered to
+    attachment_ids:   List[int]           = dataclasses.field(default_factory=list)
+    relay_to_plugins: bool                = False
 
     @staticmethod
     def from_dict(src: Dict[bytes, bt_value]) -> "PluginInsertMessage":
@@ -131,6 +132,10 @@ class PluginInsertMessage:
             whisper_mods     = typing.cast(bool, src[b'whisper_mods']),
             relay_to_plugins = typing.cast(bool, src[b'relay_to_plugins'])
         )
+
+        if b"alt_id" in src:
+            assert isinstance(src[b"alt_id"], bytes)
+            result.alt_id = src[b'alt_id']
 
         if b"whisper_to" in src:
             assert isinstance(src[b"whisper_to"], int)
@@ -157,6 +162,8 @@ class PluginInsertMessage:
             b'whisper_mods':     int(self.whisper_mods),
             b'relay_to_plugins': int(self.relay_to_plugins),
         }
+        if self.alt_id:
+            result[b"alt_id"] = self.alt_id
         if self.whisper_to:
             result[b"whisper_to"] = self.whisper_to
         if len(self.attachment_ids):
@@ -167,3 +174,52 @@ class PluginInsertMessage:
         d      = self.to_dict()
         result = oxenc.bt_serialize(d)
         return result
+
+
+@dataclasses.dataclass
+class ReactionPosted:
+    """Event sent to plugins when a user adds a reaction to a message"""
+    msg_id:     MessageID  # Message ID being reacted to
+    reaction:   str        # The reaction emoji/content (1-12 unicode characters)
+    user_id:    int        # User ID of the reactor
+    session_id: SessionID  # 33-byte blinded Session ID (15-blinded x25519 pubkey)
+    room_id:    int        # Room ID
+    room_token: RoomToken  # Room token
+    room_name:  str        # Room display name
+    is_mod:     bool       # Whether reactor is a moderator
+    is_admin:   bool       # Whether reactor is an admin
+
+    @classmethod
+    def from_dict(cls, src: Dict[bytes, bt_value]) -> "ReactionPosted":
+        return cls(
+            msg_id     = typing.cast(int, src[b'msg_id']),
+            reaction   = typing.cast(bytes, src[b'reaction']).decode('utf-8'),
+            user_id    = typing.cast(int, src[b'user_id']),
+            session_id = bytes.fromhex(typing.cast(bytes, src[b'session_id']).decode('utf-8')),
+            room_id    = typing.cast(int, src[b'room_id']),
+            room_token = typing.cast(bytes, src[b'room_token']),
+            room_name  = typing.cast(bytes, src[b'room_name']).decode('utf-8'),
+            is_mod     = bool(typing.cast(int, src[b'is_mod'])),
+            is_admin   = bool(typing.cast(int, src[b'is_admin'])),
+        )
+
+    @classmethod
+    def from_bencode(cls, data: Union[bytes, memoryview]) -> "ReactionPosted":
+        d: Dict[bytes, bt_value] = oxenc.bt_deserialize(data)
+        return cls.from_dict(d)
+
+    def to_dict(self) -> Dict[bytes, bt_value]:
+        return {
+            b'msg_id':     self.msg_id,
+            b'reaction':   self.reaction.encode('utf-8'),
+            b'user_id':    self.user_id,
+            b'session_id': self.session_id.hex().encode('utf-8'),
+            b'room_id':    self.room_id,
+            b'room_token': self.room_token,
+            b'room_name':  self.room_name.encode('utf-8'),
+            b'is_mod':     int(self.is_mod),
+            b'is_admin':   int(self.is_admin),
+        }
+
+    def to_bencode(self) -> bytes:
+        return oxenc.bt_serialize(self.to_dict())

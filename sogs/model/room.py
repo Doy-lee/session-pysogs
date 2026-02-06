@@ -1,7 +1,7 @@
 from .. import config, crypto, db, utils, session_pb2 as protobuf
 from ..db import query
 from ..hashing import blake2b
-from ..omq import send_mule, synchronous_mule_request
+from ..omq import send_mule, send_mule_request_synchronous
 from oxenc import bt_deserialize
 from ..web import app
 from .user import User
@@ -637,7 +637,7 @@ class Room:
             }
             # response is meaningless for now; just used to wait for mule.
             from datetime import timedelta
-            plugin_resp = synchronous_mule_request("worker.request_read", req, prefix=None, timeout=timedelta(seconds=3))
+            plugin_resp = send_mule_request_synchronous("worker.request_read", req, prefix=None, timeout=timedelta(seconds=3))
 
         msgs = []
 
@@ -1107,7 +1107,7 @@ class Room:
         # Post the message to the mule worker to be run against the plugin hooks
         plugin_response: Dict[bytes, sogs.types.bt_value] = {}
         try:
-            plugin_response = bt_deserialize(synchronous_mule_request("worker.on_room_add_post_request", room_msg_post.to_bencode(), prefix=None)[0])
+            plugin_response = bt_deserialize(send_mule_request_synchronous("worker.on_room_add_post_request", room_msg_post.to_bencode(), prefix=None)[0])
         except Exception as e:
             app.logger.warning(f"Plugin filter exception: {e}")
             if not test_suite:
@@ -1514,18 +1514,16 @@ class Room:
                 is_mod = self.check_moderator(user)
                 is_admin = self.check_admin(user)
                 if relay_to_plugins:
-                    reaction_dict = {
-                        'msg_id': msg_id,
-                        'reaction': reaction,
-                        'user_id': user.id,
-                        'session_id': user.using_id,
-                        'room_id': self.id,
-                        'room_token': self.token,
-                        'room_name': self.name,
-                        'is_mod': is_mod,
-                        'is_admin': is_admin,
-                    }
-                    send_mule("reaction_posted", reaction_dict)
+                    req = sogs.types.ReactionPosted(msg_id     = msg_id,
+                                                    reaction   = reaction,
+                                                    user_id    = user.id,
+                                                    session_id = bytes.fromhex(user.using_id),
+                                                    room_id    = self.id,
+                                                    room_token = self.token.encode(),
+                                                    room_name  = self.name,
+                                                    is_mod     = is_mod,
+                                                    is_admin   = is_admin,)
+                    send_mule("on_reaction_posted", req.to_dict())
 
             except sqlalchemy.exc.IntegrityError:
                 added = False

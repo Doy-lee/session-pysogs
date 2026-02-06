@@ -14,6 +14,7 @@ class SlashTestPlugin(Plugin):
         self.register_pre_command('/test_handled', self.handle_pre_slash)
         self.register_post_command('/test_handled', self.handle_post_slash)
         self.register_pre_command('/get_file', self.handle_get_file)
+        log.info("Plugin initialised: x25519 pubkey {}".format(self.x_pubkey.hex()))
 
     def handle_pre_slash(self, request: Dict[bytes, bt_value], command_parts: List[str]) -> bool:
         print(f"slash pre-insertion command: {json.dumps(request, indent=1)} {command_parts}")
