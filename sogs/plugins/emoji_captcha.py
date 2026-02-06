@@ -879,11 +879,9 @@ def entry_point(ini_path: str = 'emoji_captcha.ini'):
         # In this example we are running the CAPTCHA plugin on a DB that is local to the application
         # and is trusted so we authorise ourselves directly into the plugins table thus making this
         # plugin completely standalone.
-        from sogs.web import app
-        with app.app_context():
-            import sogs.db
-            with sogs.db.transaction():
-                sogs.db.query("INSERT OR IGNORE INTO plugins (name, auth_key, global, approver, subscribe) VALUES ('Emoji Captcha', :key, 1, 1, 1)", key=plugin.x_pubkey)
+        import sqlite3
+        with sqlite3.connect('sogs.db') as conn:
+            _ = conn.execute("INSERT OR IGNORE INTO plugins (name, auth_key, global, approver, subscribe) VALUES ('Emoji Captcha', ?, 1, 1, 1)", (plugin.x_pubkey,))
 
         plugin.run()
     except Exception:
