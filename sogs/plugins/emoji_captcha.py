@@ -67,6 +67,24 @@ refresh_timeout_s = 60
 ; This is the number of seconds the SOGS will wait before providing the next CAPTCHA if a user fails
 ; the CAPTCHA.
 retry_timeout_s = 60
+
+; Set the path to a text file that contains the list of emojis to use in the CAPTCHA challenge. You
+; may specify the emojis using a unicode escaped string, or otherwise the emoji verbatim. Comments
+; are supported by suffixing the line with '#' followed by the comment.
+;
+; You may use \\U syntax for 8 byte, \\u for 4 byte encoding of emojis or the emoji glyph directly.
+; The specified path can be absolute or relative. If it's relative, the file is opened relative to
+; the directory that this .INI file is loaded from. If this field is not supplied, a default list of
+; emojis will be used.
+;
+; Example:
+;
+;   \U0001F602 # 😂
+;   ❤️
+;
+; Would make the plugin generate challenge CAPTCHAs with an answer of either the crying-face and
+; heart emoji.
+emoji_list_file = <path/to/file.txt>
 ```
 """
 
@@ -106,7 +124,7 @@ DEFAULT_COLOUR_SET: List[int] = [
 ]
 assert len(DEFAULT_COLOUR_SET) >= len(ShapeType)
 
-EMOJI_LIST: List[str] = [
+DEFAULT_EMOJI_LIST: List[str] = [
     "\U0001F602",           # 😂
     "\U00002764\U0000FE0F", # ❤️
     "\U0001F923",           # 🤣
@@ -495,25 +513,24 @@ class CaptchaManager:
     def __post_init__(self):
         """Initialize and pre-generate CAPTCHA batch."""
         os.makedirs(self.data_dir, exist_ok=True)
-        asyncio.run(self.batch_generate_captcha(self.batch_size))
 
-    async def batch_generate_captcha(self, count: int):
+    async def batch_generate_captcha(self, emoji_list: List[str], count: int):
         """Generate multiple CAPTCHAs concurrently using thread pool."""
         start_time = time()
         font: ImageFont.FreeTypeFont = ImageFont.truetype(self.font_path, self.font_size, layout_engine=ImageFont.Layout.RAQM)
         with ThreadPoolExecutor(max_workers=8) as executor:
             tasks = []
             for i in range(count):
-                captcha = EmojiCaptcha(random.choice(list(EMOJI_LIST)), f"{self.data_dir}/captcha_{i:03}.png")
+                captcha = EmojiCaptcha(random.choice(list(emoji_list)), f"{self.data_dir}/captcha_{i:03}.png")
                 self.captcha_list.append(captcha)
                 tasks.append(captcha.generate_captcha(executor, width=self.width, height=self.height, font=font, color_set=DEFAULT_COLOUR_SET))
             await asyncio.gather(*tasks)
         log.debug(f"Generated {self.batch_size} CAPTCHAs in {time() - start_time:.4}s")
 
-    def refresh(self) -> Captcha:
+    def refresh(self, emoji_list: List[str]) -> Captcha:
         """Get a CAPTCHA from the pool, regenerating if empty."""
         if len(self.captcha_list) == 0:
-            asyncio.run(self.batch_generate_captcha(self.batch_size))
+            asyncio.run(self.batch_generate_captcha(emoji_list=emoji_list, count=self.batch_size))
         return self.captcha_list.pop()
 
 class RefreshState(enum.Enum):
@@ -573,11 +590,12 @@ class EmojiCaptchaPlugin(Plugin):
     attempt_limit_str: typing.ClassVar[str]                               = "You have hit the attempt limit, solve the CAPTCHA to proceed."
     refresh_emoji:     str                                                = "\U0001F504" # Unicode refresh symbol emoji
     users:             Dict[SessionID, Dict[RoomToken, UserCaptchaState]] = dataclasses.field(default_factory=dict)
+    emoji_list:        List[str]                                          = dataclasses.field(default_factory=lambda: DEFAULT_EMOJI_LIST)
 
     retry_limit:       int                                                = 3   # Max CAPTCHA attempts per user/room
     retry_timeout_s:   int                                                = 60  # Seconds to wait after failed attempt
     refresh_timeout_s: int                                                = 60  # Seconds between CAPTCHA refreshes
-    write_timeout_s:   int                                                = 120  # Seconds before access grant after solve
+    write_timeout_s:   int                                                = 120 # Seconds before access grant after solve
     captcha_manager:   CaptchaManager                                     = dataclasses.field(default_factory=CaptchaManager)
 
     def __post_init__(self):
@@ -586,6 +604,7 @@ class EmojiCaptchaPlugin(Plugin):
         # community. In this hook we check if the user has solved a captcha before and lets the user
         # read or otherwise require them to solve captcha to proceed.
         self.register_request_read_handler(self.handle_request_read)
+
         log.info("Plugin initialised: refresh {}s; retry {}s; write {}s; captcha limit {}; x25519 pubkey {}"
                  .format(self.refresh_timeout_s,
                          self.retry_timeout_s,
@@ -777,7 +796,7 @@ class EmojiCaptchaPlugin(Plugin):
         user.posted_captcha_msg_id                = None
         user.posted_captcha_refresh_emoji_applied = False
 
-        user.posted_captcha           = self.captcha_manager.refresh();
+        user.posted_captcha           = self.captcha_manager.refresh(emoji_list=self.emoji_list)
         user.posted_captcha_timestamp = time()
 
         captcha_attachment_metadata: Optional[Dict[str, typing.Any]] = self.upload_file(user.posted_captcha.file_path, room_token)
@@ -832,7 +851,7 @@ class EmojiCaptchaPlugin(Plugin):
 
             _ = self.tick(room_token=req.room_token, user_id=req.user_id, session_id=req.session_id, room_name=req.room_name)
 
-def entry_point(ini_path: str = 'emoji_captcha.ini'):
+def entry_point(ini_file: str = 'emoji_captcha.ini'):
     import argparse
     import traceback
 
@@ -842,31 +861,58 @@ def entry_point(ini_path: str = 'emoji_captcha.ini'):
                             default=os.environ.get('PLUGIN_EMOJI_CAPTCHA_INI_PATH', 'emoji_captcha.ini'),
                             help='Path to the configuration .ini file (default: emoji_captcha.ini or set PLUGIN_EMOJI_CAPTCHA_INI_PATH env)')
     args     = parser.parse_args()
-    ini_path = typing.cast(str, args.plugin_emoji_captcha_ini_path)
+    ini_file = typing.cast(str, args.plugin_emoji_captcha_ini_path)
 
     # Load common INI configuration
-    log.info(f"Loading Emoji CAPTCHA plugin config from {ini_path}")
+    log.info(f"Loading Emoji CAPTCHA plugin config from {ini_file}")
     log.name                    = 'CAPTCHA'
-    config: PluginConfigFromINI = Plugin.load_ini_from_path(ini_path)
+    config: PluginConfigFromINI = Plugin.load_ini_from_path(ini_file)
     if not config.success:
         return
 
     # Plugin specific fields from INI
-    key_file:          str   = config.ini.get('plugin_emoji_captcha',    'key_file',          fallback="plugin_emoji_captcha_ed25519")
-    display_name:      str   = config.ini.get('plugin_emoji_captcha',    'display_name',      fallback="Emoji CAPTCHA Plugin")
-    retry_limit:       int   = config.ini.getint('plugin_emoji_captcha', 'retry_limit',       fallback=3)
-    write_timeout_s:   int   = config.ini.getint('plugin_emoji_captcha', 'write_timeout',     fallback=120)
-    refresh_timeout_s: int   = config.ini.getint('plugin_emoji_captcha', 'refresh_timeout_s', fallback=60)
-    retry_timeout_s:   int   = config.ini.getint('plugin_emoji_captcha', 'retry_timeout_s',   fallback=60)
-    ed_privkey:        bytes = Plugin.get_or_make_ed25519_privkey(key_file)
+    key_file:          str           = config.ini.get('plugin_emoji_captcha',    'key_file',              fallback="plugin_emoji_captcha_ed25519")
+    display_name:      str           = config.ini.get('plugin_emoji_captcha',    'display_name',          fallback="Emoji CAPTCHA Plugin")
+    retry_limit:       Optional[int] = config.ini.getint('plugin_emoji_captcha', 'retry_limit',           fallback=None)
+    retry_timeout_s:   Optional[int] = config.ini.getint('plugin_emoji_captcha', 'retry_timeout_s',       fallback=None)
+    refresh_timeout_s: Optional[int] = config.ini.getint('plugin_emoji_captcha', 'refresh_timeout_s',     fallback=None)
+    write_timeout_s:   Optional[int] = config.ini.getint('plugin_emoji_captcha', 'write_timeout',         fallback=None)
+    emoji_list_file:   str           = config.ini.get('plugin_emoji_captcha',    'emoji_list_file', fallback="")
+    ed_privkey:        bytes         = Plugin.get_or_make_ed25519_privkey(key_file)
+
+    emoji_list: List[str] = []
+    if len(emoji_list_file):
+        import pathlib
+        emoji_list_path = pathlib.Path(emoji_list_file)
+
+        # Convert the emoji list path, if relative, to be relative to the .ini path
+        if not emoji_list_path.is_absolute():
+            ini_path                = pathlib.Path(ini_file)
+            base_path: pathlib.Path = ini_path.parent if ini_path.is_file() else ini_path
+            emoji_list_path         = base_path / emoji_list_path
+
+        # Parse the emoji buffer, we parse directly encoded emojis but also escaped emojis in the
+        emoji_buffer = emoji_list_path.read_text()
+        emoji_lines  = emoji_buffer.splitlines()
+        for line in emoji_lines:
+            line = line.strip()
+            if '#' in line:
+                line = line.split('#')[0].strip()
+            if line and len(line):
+                if line.startswith('\\u') or line.startswith('\\U'):
+                    emoji_list.append(line.encode().decode('unicode-escape'))
+                else:
+                    emoji_list.append(line)
 
     try:
         # Instantiate the plugin and configure extra fields in the plugin
         plugin                   = EmojiCaptchaPlugin(sogs_address=config.sogs_address, sogs_pubkey=config.sogs_pubkey, ed_privkey=ed_privkey, display_name=display_name)
-        plugin.retry_limit       = retry_limit
-        plugin.retry_timeout_s   = retry_timeout_s
-        plugin.refresh_timeout_s = refresh_timeout_s
-        plugin.write_timeout_s   = write_timeout_s
+        plugin.retry_limit       = retry_limit       or plugin.retry_limit
+        plugin.retry_timeout_s   = retry_timeout_s   or plugin.retry_timeout_s
+        plugin.refresh_timeout_s = refresh_timeout_s or plugin.refresh_timeout_s
+        plugin.write_timeout_s   = write_timeout_s   or plugin.write_timeout_s
+        if len(emoji_list_file):
+            plugin.emoji_list = emoji_list
 
         # Register the plugin to the DB. SOGS uses this DB to authenticate incoming requests as long
         # as they are signed by the x25519 key stored here. This table also contains permissions for
