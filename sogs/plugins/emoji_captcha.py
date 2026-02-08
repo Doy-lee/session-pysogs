@@ -99,14 +99,14 @@ import enum
 import math
 import os
 import random
+import time
 import typing
 import typing_extensions
 
-from time               import time
+from PIL                import Image,  ImageDraw, ImageFont
+from concurrent.futures import ThreadPoolExecutor
 from sogs.plugin        import *
 from sogs.types         import SessionID, RoomToken, MessageID, TimestampS, bt_value, ReactionPosted
-from concurrent.futures import ThreadPoolExecutor
-from PIL                import Image,  ImageDraw, ImageFont
 from typing             import Dict, List, Optional, Tuple
 
 class ShapeType(enum.Enum):
@@ -521,7 +521,7 @@ class CaptchaManager:
 
     async def batch_generate_captcha(self, emoji_list: List[str], count: int):
         """Generate multiple CAPTCHAs concurrently using thread pool."""
-        start_time = time()
+        start_time = time.time()
         font: ImageFont.FreeTypeFont = ImageFont.truetype(self.font_path, self.font_size, layout_engine=ImageFont.Layout.RAQM)
         with ThreadPoolExecutor(max_workers=8) as executor:
             tasks = []
@@ -530,7 +530,7 @@ class CaptchaManager:
                 self.captcha_list.append(captcha)
                 tasks.append(captcha.generate_captcha(executor, width=self.width, height=self.height, font=font, color_set=DEFAULT_COLOUR_SET))
             await asyncio.gather(*tasks)
-        log.debug(f"Generated {self.batch_size} CAPTCHAs in {time() - start_time:.4}s")
+        log.debug(f"Generated {self.batch_size} CAPTCHAs in {time.time() - start_time:.4}s")
 
     def refresh(self, emoji_list: List[str]) -> Captcha:
         """Get a CAPTCHA from the pool, regenerating if empty."""
@@ -668,7 +668,7 @@ class EmojiCaptchaPlugin(Plugin):
         successful before progressing the CAPTCHA lifecycle.
         """
         user: UserCaptchaState = self.get_or_make_user(session_id, room_token)
-        now:  float            = time()
+        now:  float            = time.time()
 
         # NOTE: CAPTCHA state-machine
         if 1:
@@ -802,7 +802,7 @@ class EmojiCaptchaPlugin(Plugin):
         user.posted_captcha_refresh_emoji_applied = False
 
         user.posted_captcha           = self.captcha_manager.refresh(emoji_list=self.emoji_list)
-        user.posted_captcha_timestamp = time()
+        user.posted_captcha_timestamp = time.time()
 
         captcha_attachment_metadata: Optional[Dict[str, typing.Any]] = self.upload_file(user.posted_captcha.file_path, room_token)
         if not captcha_attachment_metadata:
@@ -843,7 +843,7 @@ class EmojiCaptchaPlugin(Plugin):
 
         if user.posted_captcha_msg_id == req.msg_id and user.posted_captcha:
             if req.reaction == user.posted_captcha.answer:
-                user.captcha_solved_grant_access_at_ts = time() + self.write_timeout_s
+                user.captcha_solved_grant_access_at_ts = time.time() + self.write_timeout_s
                 user.captcha_state                     = CaptchaState.Solved
                 log.info(f"Access granted to 0x{req.session_id.hex()} in room '{req.room_token}'")
             elif req.reaction == self.refresh_emoji:

@@ -3,12 +3,12 @@ import typing
 import oxenc
 import oxenmq
 import typing_extensions
+import time
 
-from time import time
-from typing import Optional
-from sogs.types import bt_value, SessionID, RoomToken, MessageID
+from typing      import Optional
+from sogs.types  import bt_value, SessionID, RoomToken, MessageID
 from sogs.plugin import Plugin, RoomReadRequest
-from typing import Dict
+from typing      import Dict
 
 @dataclasses.dataclass
 class PermissionPlugin(Plugin):
@@ -27,7 +27,7 @@ class PermissionPlugin(Plugin):
         room_token: RoomToken = req.room_token
         session_id: SessionID = req.session_id
         if session_id in self.retry_jail:
-            if time() > self.retry_jail[session_id]:
+            if time.time() > self.retry_jail[session_id]:
                 del self.retry_jail[session_id]
             else:
                 return oxenc.bt_serialize("JAIL")
@@ -89,7 +89,7 @@ class PermissionPlugin(Plugin):
                     whisper_target=session_id,
                     relay_to_plugins=False,
                 )
-                self.retry_jail[session_id] = time() + self.retry_timeout
+                self.retry_jail[session_id] = time.time() + self.retry_timeout
             self.delete_message(msg_id)
             del self.pending_requests[session_id][room_token]
             if len(self.pending_requests[session_id]) == 0:
