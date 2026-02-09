@@ -521,7 +521,8 @@ CREATE INDEX inbox_recipient ON inbox(recipient);
 
 CREATE TABLE plugins (
     id INTEGER NOT NULL PRIMARY KEY,
-    auth_key BLOB UNIQUE,                                  /* Plugin's auth key, if the plugin connection requires it */
+    ed_key BLOB UNIQUE,                                    /* Plugin's ed25519 pubkey */
+    x_key BLOB,                                            /* Plugin's x25519 pubkey derived from ed_key for OxenMQ auth */
     "user" INTEGER REFERENCES users(id) ON DELETE CASCADE, /* Plugin can be tied to a session_id/user */
     name TEXT,                                             /* Human readable name for SOGs operator book-keeping purposes */
     global BOOLEAN DEFAULT FALSE,                          /* Is this plugin to be applied **all** messages */

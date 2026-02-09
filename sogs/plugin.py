@@ -173,12 +173,12 @@ class Plugin:
     omq:                  oxenmq.OxenMQ       = dataclasses.field(init=False)
 
     @staticmethod
-    def register_plugin_to_db(db_path: str, x_pubkey: bytes, name: str, is_global: bool, is_approver: bool, is_subscribe: bool) -> RegisterPluginResult:
-        """Inserts a new plugin record into the `plugins` table with the x25519 public key.
+    def register_plugin_to_db(db_path: str, ed_pubkey: bytes, name: str, is_global: bool, is_approver: bool, is_subscribe: bool) -> RegisterPluginResult:
+        """Inserts a new plugin record into the `plugins` table with the ed25519 public key.
 
         The plugin sends requests via OxenMQ to SOGS which is authenticated by signing their request
-        with the x25519 key. The SOGS will lookup plugin associated with the request and verify the
-        request before proceeding.
+        with the derived x25519 key. The SOGS will lookup plugin associated with the request and
+        verify the request before proceeding.
 
         Important:
             This method requires direct filesystem access to the SOGS database. If the
@@ -188,8 +188,8 @@ class Plugin:
 
         Args:
             db_path: Path to the SOGS SQLite database file.
-            x_pubkey: The plugin's 32-byte x25519 public key used for authentication.
-                      This becomes the `auth_key` in the database.
+            ed_pubkey: The plugin's 32-byte ed25519 public key used for authentication.
+                       This becomes the `ed_pubkey` in the database.
             name: Human-readable name for the plugin (for operator bookkeeping).
             is_global: If True, the plugin is applied to all messages across all rooms.
                        If False, use `register_plugin_to_rooms` to specify which rooms
@@ -203,19 +203,22 @@ class Plugin:
             - was_inserted: True if a new plugin was created, False if it already existed.
 
         Raises:
-            AssertionError: If x_pubkey is not exactly 32 bytes.
+            AssertionError: If ed_pubkey is not exactly 32 bytes.
         """
-        assert len(x_pubkey) == sodium.crypto_sign_PUBLICKEYBYTES, "`x_pubkey` must be the plugin's 32 byte x25519 public key"
+        assert len(ed_pubkey) == sodium.crypto_sign_PUBLICKEYBYTES, "`ed_pubkey` must be the plugin's 32 byte ed25519 public key"
         import sqlite3
+
+        # Derive x25519 key from ed25519 key
+        x_pubkey = sodium.crypto_sign_ed25519_pk_to_curve25519(ed_pubkey)
         plugin_id: int = 0
         with sqlite3.connect(db_path) as conn:
             cursor = conn.execute(
-                "INSERT OR IGNORE INTO plugins (name, auth_key, global, approver, subscribe) VALUES (?, ?, ?, ?, ?)",
-                (name, x_pubkey, is_global, is_approver, is_subscribe)
+                "INSERT OR IGNORE INTO plugins (name, ed_key, x_key, global, approver, subscribe) VALUES (?, ?, ?, ?, ?, ?)",
+                (name, ed_pubkey, x_pubkey, is_global, is_approver, is_subscribe)
             )
             was_inserted = cursor.rowcount > 0
 
-            row       = typing.cast(Tuple[int], conn.execute("SELECT id FROM plugins WHERE auth_key = ?", (x_pubkey,)).fetchone())
+            row       = typing.cast(Tuple[int], conn.execute("SELECT id FROM plugins WHERE ed_key = ?", (ed_pubkey,)).fetchone())
             plugin_id = row[0]
 
         result = RegisterPluginResult(plugin_id=plugin_id, was_inserted=was_inserted)

@@ -42,7 +42,6 @@ plugin_conns: Dict[PluginID, oxenmq.ConnectionID] = {}
 class PluginMetadata:
     id:            PluginID       = 0
     name:          str            = ''
-    x25519_pubkey: bytes          = b''
 
     # A plugin manifests itself as a user in the community. When a plugin identifies itself to the
     # SOGS (e.g. starts hello handshake), the user account for the plugin gets added as a
@@ -69,7 +68,6 @@ plugin_post_commands: Dict[str, Set[PluginID]] = {}
 class PluginInfo:
     required:      bool  = False
     name:          str   = ''
-    x25519_pubkey: bytes = b''
 
 # not changing the keys, since this is just for fixing the values if they
 # need to be str and not bytes
@@ -112,14 +110,13 @@ def run():
 @needs_app_context
 def allow_conn(addr: str, pk: bytes, sn: bool):  # pyright: ignore[reportUnusedParameter]
     with db.transaction():
-        row = query("SELECT id FROM plugins WHERE auth_key = :key", key=pk).first()
+        row = query("SELECT id FROM plugins WHERE x_key = :key", key=pk).first()
         if row:
             app.logger.debug(f"Plugin connected: {HexEncoder.encode(pk)}")
             return oxenmq.AuthLevel.basic
 
     app.logger.warning(f"No plugin found with key: {HexEncoder.encode(pk)}")
-    # TODO: user recognition auth
-    return oxenmq.AuthLevel.denied
+    return oxenmq.AuthLevel.denied # TODO: user recognition auth
 
 def admin_conn(addr: str, pk: bytes, sn: bool):  # pyright: ignore[reportUnusedParameter]
     return oxenmq.AuthLevel.admin
@@ -162,11 +159,11 @@ def get_relevant_plugins(where_clause: str, room_id: Optional[int] = None, room_
             room_id = typing.cast(int, id_row['id'])
 
         # Query global plugins that match the where_clause
-        query_str = "SELECT id, name, required, auth_key FROM plugins WHERE global = 1 AND " + where_clause
+        query_str = "SELECT id, name, required FROM plugins WHERE global = 1 AND " + where_clause
         rows      = query(query_str)
         for row in rows:
             required          = True if row['required'] and row['required'] == 1 else False
-            result[row['id']] = PluginInfo(required=required, name=row['name'], x25519_pubkey=row['auth_key'])
+            result[row['id']] = PluginInfo(required=required, name=row['name'])
 
         # Query room-specific plugins and merge with global results
         query_str = "SELECT plugin, required FROM room_plugins WHERE room = :room_id AND " + where_clause
@@ -448,7 +445,7 @@ def plugin_hello(m: oxenmq.Message):
     new_plugin_conn = False
     with db.transaction():
 
-        row = query("SELECT id, name FROM plugins WHERE auth_key = :key", key=m.conn.pubkey).first()
+        row = query("SELECT id, name FROM plugins WHERE x_key = :key", key=m.conn.pubkey).first()
         if row is None:
             # TODO: would like to close conn in this case, but oxenmq only allows close on outgoing conns.
             app.logger.warning(f"No plugin found with key: {m.conn.pubkey}")
@@ -461,7 +458,6 @@ def plugin_hello(m: oxenmq.Message):
 
         metadata: PluginMetadata = plugin_conn_info[m.conn]
         metadata.id              = typing.cast(int, row['id'])
-        metadata.x25519_pubkey   = m.conn.pubkey
         try:
             if len(m.dataview()):
                 session_id: str = bt_deserialize(m.dataview()[0]).decode('ascii')

@@ -265,16 +265,19 @@ def _resolve_plugin_id(plugin_id_or_key: str) -> int:
         raise ValueError(
             "Invalid Ed25519 public key: must be 64 hex characters (32 bytes)")
 
-    import nacl.bindings as sodium
-    x_pubkey = sodium.crypto_sign_ed25519_pk_to_curve25519(ed_pubkey)
-
     from .db import query
-    plugin = query("SELECT id FROM plugins WHERE auth_key = :key", key=x_pubkey).first()
+    plugin = query("SELECT id FROM plugins WHERE ed_key = :key", key=ed_pubkey).first()
 
     if not plugin:
         raise ValueError(
             f"No plugin found with Ed25519 public key '{plugin_id_or_key}'")
     return plugin['id']
+
+
+def _verify_plugin_keys(ed_key: bytes, x_key: bytes) -> bool:
+    import nacl.bindings as sodium
+    expected_x_key = sodium.crypto_sign_ed25519_pk_to_curve25519(ed_key)
+    return expected_x_key == x_key
 
 
 args = ap.parse_args()
@@ -760,7 +763,7 @@ elif args.list_plugins:
     from .db import query
 
     # Get all plugins
-    plugins = query("SELECT id, name, auth_key, global, approver, subscribe FROM plugins ORDER BY id").all()
+    plugins = query("SELECT id, name, ed_key, x_key, global, approver, subscribe FROM plugins ORDER BY id").all()
 
     if not plugins:
         print("No plugins registered.")
@@ -772,8 +775,17 @@ elif args.list_plugins:
             approver_flag  = bool(plugin['approver'])
             subscribe_flag = bool(plugin['subscribe'])
 
+            # Get keys from database
+            ed25519_key = plugin['ed_key']
+            x25519_key = plugin['x_key']
+
+            # Verify keys match
+            if not _verify_plugin_keys(ed25519_key, x25519_key):
+                print(f"  WARNING: Stored x25519 key does not match derived key from ed25519 key!")
+
             print(f"[{index:02d}] '{name}' (Plugin ID={plugin_id})")
-            print(f"  X25519 Pubkey:             {plugin['auth_key'].hex()}")
+            print(f"  Ed25519 Pubkey:            {ed25519_key.hex()}")
+            print(f"  X25519 Pubkey:             {x25519_key.hex()}")
             print(f"  Global/Approver/Subscribe: {global_flag}/{approver_flag}/{subscribe_flag}")
 
             # Get room_plugins for this plugin
@@ -817,8 +829,6 @@ elif typing.cast(bool, args.add_plugin):
               file=sys.stderr)
         sys.exit(1)
 
-    # Convert Ed25519 public key to x25519 for storage
-    x_pubkey    = sodium.crypto_sign_ed25519_pk_to_curve25519(ed_pubkey)
     plugin_name = typing.cast(str, args.plugin_name)
 
     # Parse boolean flags
@@ -826,20 +836,25 @@ elif typing.cast(bool, args.add_plugin):
     is_approver  = args.plugin_approver  == 'true'
     is_subscribe = args.plugin_subscribe == 'true'
 
+    # Derive x25519 key from ed25519 key
+    x_pubkey = sodium.crypto_sign_ed25519_pk_to_curve25519(ed_pubkey)
+
     from .db import query
     with db.transaction():
         # Check if plugin already exists
-        existing = query("SELECT id, name, global, approver, subscribe FROM plugins WHERE auth_key = :key", key=x_pubkey).first()
+        existing = query("SELECT id, name, global, approver, subscribe FROM plugins WHERE ed_key = :key", key=ed_pubkey).first()
 
         fields: List[Tuple[str, str]] = []
-        fields.append(("Ed25519 Pubkey", f"{x_pubkey.hex()}"))
+        fields.append(("Ed25519 Pubkey", f"{ed_pubkey.hex()}"))
+        fields.append(("X25519 Pubkey",  f"{x_pubkey.hex()}"))
         if existing is None:
             plugin_id = db.insert_and_get_pk(
-                "INSERT INTO plugins (name, auth_key, global, approver, subscribe) "
-                "VALUES (:name, :key, :is_global, :is_approver, :is_subscribe)",
+                "INSERT INTO plugins (name, ed_key, x_key, global, approver, subscribe) "
+                "VALUES (:name, :ed_key, :x_key, :is_global, :is_approver, :is_subscribe)",
                 'id',
                 name         = args.plugin_name,
-                key          = x_pubkey,
+                ed_key       = ed_pubkey,
+                x_key        = x_pubkey,
                 is_global    = is_global,
                 is_approver  = is_approver,
                 is_subscribe = is_subscribe,)
@@ -865,8 +880,10 @@ elif typing.cast(bool, args.add_plugin):
 
             has_changes = (old_name != plugin_name or old_global != is_global or old_approver != is_approver or old_subscribe != is_subscribe)
             if has_changes:
-                query("UPDATE plugins SET name = :name, global = :is_global, approver = :is_approver, subscribe = :is_subscribe WHERE id = :id",
+                query("UPDATE plugins SET name = :name, ed_key = :ed_key, x_key = :x_key, global = :is_global, approver = :is_approver, subscribe = :is_subscribe WHERE id = :id",
                       name         = plugin_name,
+                      ed_key       = ed_pubkey,
+                      x_key        = x_pubkey,
                       is_global    = is_global,
                       is_approver  = is_approver,
                       is_subscribe = is_subscribe,
