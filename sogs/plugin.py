@@ -13,10 +13,9 @@ from typing          import Callable, Dict, List, Optional, Tuple, Union, Tuple
 from datetime        import timedelta
 from sogs.model.post import Post
 
+log                 = logging.Logger('PLUGIN')
 console_log_handler = logging.StreamHandler()
 console_log_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s'))
-
-log = logging.Logger('PLUGIN')
 log.addHandler(console_log_handler)
 
 class FilterResponse(enum.Enum):

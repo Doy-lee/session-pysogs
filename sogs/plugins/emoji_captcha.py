@@ -102,11 +102,13 @@ import random
 import time
 import typing
 import typing_extensions
+import sogs.plugin
+import sogs.types
+import oxenmq
+import oxenc
 
 from PIL                import Image,  ImageDraw, ImageFont
 from concurrent.futures import ThreadPoolExecutor
-from sogs.plugin        import *
-from sogs.types         import SessionID, RoomToken, MessageID, TimestampS, bt_value, ReactionPosted
 from typing             import Dict, List, Optional, Tuple
 
 class ShapeType(enum.Enum):
@@ -445,6 +447,7 @@ class Captcha:
 class EmojiCaptcha(Captcha):
     """Generates emoji-based CAPTCHAs with geometric background shapes."""
 
+    @typing_extensions.override
     async def generate_captcha(self, executor: ThreadPoolExecutor, width: int, height: int, font: ImageFont.FreeTypeFont, color_set: List[int] = DEFAULT_COLOUR_SET):
         assert len(color_set) >= len(ShapeType), \
             "The number of colours to select from must be greater the number of shapes we that are to be drawn"
@@ -530,7 +533,7 @@ class CaptchaManager:
                 self.captcha_list.append(captcha)
                 tasks.append(captcha.generate_captcha(executor, width=self.width, height=self.height, font=font, color_set=DEFAULT_COLOUR_SET))
             await asyncio.gather(*tasks)
-        log.debug(f"Generated {self.batch_size} CAPTCHAs in {time.time() - start_time:.4}s")
+        sogs.plugin.log.debug(f"Generated {self.batch_size} CAPTCHAs in {time.time() - start_time:.4}s")
 
     def refresh(self, emoji_list: List[str]) -> Captcha:
         """Get a CAPTCHA from the pool, regenerating if empty."""
@@ -560,27 +563,27 @@ class UserCaptchaState:
     Tracks all state needed to manage a user's progress through the CAPTCHA flow.
     Stored in nested dict: users[session_id][room_token] -> UserCaptchaState
     """
-    refresh_state:                        RefreshState        = RefreshState.Nil
-    refresh_msg_id:                       Optional[MessageID] = None
+    refresh_state:                        RefreshState                   = RefreshState.Nil
+    refresh_msg_id:                       Optional[sogs.types.MessageID] = None
 
-    captcha_state:                        CaptchaState        = CaptchaState.Nil
-    captcha_failed_next_attempt_at_ts:    TimestampS          = 0.0  # Retry timeout after failure
-    captcha_attempts:                     int                 = 0    # Count of used CAPTCHAs
-    captcha_limit_msg_shown:              bool                = False
+    captcha_state:                        CaptchaState                   = CaptchaState.Nil
+    captcha_failed_next_attempt_at_ts:    sogs.types.TimestampS          = 0.0  # Retry timeout after failure
+    captcha_attempts:                     int                            = 0    # Count of used CAPTCHAs
+    captcha_limit_msg_shown:              bool                           = False
 
-    captcha_solved_grant_access_at_ts:    TimestampS          = 0.0
-    captcha_solved_welcome_msg_shown:     bool                = False
-    captcha_solved_grant_access:          bool                = False
+    captcha_solved_grant_access_at_ts:    sogs.types.TimestampS          = 0.0
+    captcha_solved_welcome_msg_shown:     bool                           = False
+    captcha_solved_grant_access:          bool                           = False
 
-    posted_captcha:                       Optional[Captcha]   = None
-    posted_captcha_timestamp:             TimestampS          = 0.0
-    posted_captcha_msg_id:                Optional[MessageID] = None
-    posted_captcha_refresh_emoji_applied: bool                = False
+    posted_captcha:                       Optional[Captcha]              = None
+    posted_captcha_timestamp:             sogs.types.TimestampS          = 0.0
+    posted_captcha_msg_id:                Optional[sogs.types.MessageID] = None
+    posted_captcha_refresh_emoji_applied: bool                           = False
 
     # Reliable message deletion queues - messages retried until successful deletion
-    msgs_to_delete_on_tick:               List[MessageID]     = dataclasses.field(default_factory=list)
-    reactions_to_delete_on_tick:          List[MessageID]     = dataclasses.field(default_factory=list)
-    msgs_to_delete_on_ready:              List[MessageID]     = dataclasses.field(default_factory=list)
+    msgs_to_delete_on_tick:               List[sogs.types.MessageID]     = dataclasses.field(default_factory=list)
+    reactions_to_delete_on_tick:          List[sogs.types.MessageID]     = dataclasses.field(default_factory=list)
+    msgs_to_delete_on_ready:              List[sogs.types.MessageID]     = dataclasses.field(default_factory=list)
 
     def clear_posted_captcha(self):
         """Reset current CAPTCHA state after failure or consumption."""
@@ -590,18 +593,18 @@ class UserCaptchaState:
         self.posted_captcha_timestamp             = 0
 
 @dataclasses.dataclass
-class EmojiCaptchaPlugin(Plugin):
+class EmojiCaptchaPlugin(sogs.plugin.Plugin):
     """SOGS Plugin implementing emoji CAPTCHA verification for room access"""
-    attempt_limit_str: typing.ClassVar[str]                               = "You have hit the attempt limit, solve the CAPTCHA to proceed."
-    refresh_emoji:     str                                                = "\U0001F504" # Unicode refresh symbol emoji
-    users:             Dict[SessionID, Dict[RoomToken, UserCaptchaState]] = dataclasses.field(default_factory=dict)
-    emoji_list:        List[str]                                          = dataclasses.field(default_factory=lambda: DEFAULT_EMOJI_LIST)
+    attempt_limit_str: typing.ClassVar[str]                                                     = "You have hit the attempt limit, solve the CAPTCHA to proceed."
+    refresh_emoji:     str                                                                      = "\U0001F504" # Unicode refresh symbol emoji
+    users:             Dict[sogs.types.SessionID, Dict[sogs.types.RoomToken, UserCaptchaState]] = dataclasses.field(default_factory=dict)
+    emoji_list:        List[str]                                                                = dataclasses.field(default_factory=lambda: DEFAULT_EMOJI_LIST)
 
-    retry_limit:       int                                                = 3   # Max CAPTCHA attempts per user/room
-    retry_timeout_s:   int                                                = 60  # Seconds to wait after failed attempt
-    refresh_timeout_s: int                                                = 60  # Seconds between CAPTCHA refreshes
-    write_timeout_s:   int                                                = 120 # Seconds before access grant after solve
-    captcha_manager:   CaptchaManager                                     = dataclasses.field(default_factory=CaptchaManager)
+    retry_limit:       int                                                                      = 3   # Max CAPTCHA attempts per user/room
+    retry_timeout_s:   int                                                                      = 60  # Seconds to wait after failed attempt
+    refresh_timeout_s: int                                                                      = 60  # Seconds between CAPTCHA refreshes
+    write_timeout_s:   int                                                                      = 120 # Seconds before access grant after solve
+    captcha_manager:   CaptchaManager                                                           = dataclasses.field(default_factory=CaptchaManager)
 
     def __post_init__(self):
         super().__post_init__()
@@ -617,7 +620,7 @@ class EmojiCaptchaPlugin(Plugin):
             ("CAPTCHA Retries",     f"{self.retry_limit}"),
         ])
 
-        log_line: str = "Plugin initialised:\n  " + "\n  ".join(Plugin.pretty_format_key_value_list(desc_lines))
+        log_line: str = "Plugin initialised:\n  " + "\n  ".join(sogs.plugin.Plugin.pretty_format_key_value_list(desc_lines))
         log.info(log_line)
 
     def get_user(self, session_id: bytes, room_token: bytes) -> Optional[UserCaptchaState]:
@@ -630,7 +633,7 @@ class EmojiCaptchaPlugin(Plugin):
         result = self.users.setdefault(session_id, {}).setdefault(room_token, UserCaptchaState())
         return result
 
-    def handle_request_read(self, req: RoomReadRequest) -> bt_value:
+    def handle_request_read(self, req: sogs.plugin.RoomReadRequest) -> sogs.types.bt_value:
         """Handles generating a CAPTCHA for the user requesting read permission into a particular
         room as well as rate limiting these attempts and allowing users to refresh the provided
         CAPTCHA. If a user already has read permission, this hook is not called for that user.
@@ -644,19 +647,19 @@ class EmojiCaptchaPlugin(Plugin):
         challenge lifecycle.
         """
         user: UserCaptchaState = self.get_or_make_user(req.session_id, req.room_token)
-        log.debug(f"Room {req.room_token} polled by 0x{req.session_id.hex()} (id={req.user_id}, challenges={user.captcha_attempts}/{self.retry_limit})")
+        sogs.plugin.log.debug(f"Room {req.room_token} polled by 0x{req.session_id.hex()} (id={req.user_id}, challenges={user.captcha_attempts}/{self.retry_limit})")
 
-        result: bt_value = self.tick(room_token=req.room_token, user_id=req.user_id, session_id=req.session_id, room_name=req.room_name)
+        result: sogs.types.bt_value = self.tick(room_token=req.room_token, user_id=req.user_id, session_id=req.session_id, room_name=req.room_name)
         return result
 
-    def _ensure_refresh_emoji_on_captcha(self, room_token: bytes, user: UserCaptchaState, msg_id: MessageID):
+    def _ensure_refresh_emoji_on_captcha(self, room_token: bytes, user: UserCaptchaState, msg_id: sogs.types.MessageID):
         captchas_remaining: int  = self.retry_limit - user.captcha_attempts
         if not user.posted_captcha_refresh_emoji_applied and captchas_remaining > 1:
-            react_resp: Dict[bytes, bt_value] = self.post_reactions(room_token, msg_id, self.refresh_emoji)
+            react_resp: Dict[bytes, sogs.types.bt_value] = self.post_reactions(room_token, msg_id, self.refresh_emoji)
             if b'status' in react_resp and react_resp[b'status'] == b'OK':
                 user.posted_captcha_refresh_emoji_applied = True
 
-    def tick(self, room_token: bytes, user_id: int, session_id: SessionID, room_name: str) -> bt_value:
+    def tick(self, room_token: bytes, user_id: int, session_id: sogs.types.SessionID, room_name: str) -> sogs.types.bt_value:
         """Executes the CAPTCHA lifecycle for the specified user and room
 
         This is periodically called to progress the CAPTCHA lifecycle for the user:
@@ -719,8 +722,8 @@ class EmojiCaptchaPlugin(Plugin):
 
                 if s_remaining <= 0 and not user.captcha_solved_grant_access:
                     resp = self.set_user_room_permissions(room=room_token, user=session_id, read=True, write=True)
-                    assert resp != SetUserRoomPermissionsResponse.InvalidArg
-                    user.captcha_solved_grant_access = resp == SetUserRoomPermissionsResponse.Ok
+                    assert resp != sogs.plugin.SetUserRoomPermissionsResponse.InvalidArg
+                    user.captcha_solved_grant_access = resp == sogs.plugin.SetUserRoomPermissionsResponse.Ok
 
         # NOTE: Refresh state-machine
         if 1:
@@ -798,7 +801,7 @@ class EmojiCaptchaPlugin(Plugin):
 
         return self._post_challenge(room_token, user_id, session_id, room_name)
 
-    def _post_challenge(self, room_token: bytes, user_id: int, session_id: SessionID, room_name: str) -> bt_value:
+    def _post_challenge(self, room_token: bytes, user_id: int, session_id: sogs.types.SessionID, room_name: str) -> sogs.types.bt_value:
         """Generate and post new CAPTCHA challenge to user."""
         user: UserCaptchaState                    = self.get_or_make_user(session_id, room_token)
         user.posted_captcha_msg_id                = None
@@ -809,7 +812,7 @@ class EmojiCaptchaPlugin(Plugin):
 
         captcha_attachment_metadata: Optional[Dict[str, typing.Any]] = self.upload_file(user.posted_captcha.file_path, room_token)
         if not captcha_attachment_metadata:
-            log.error(f"Failed to create a CAPTCHA for user 0x{session_id.hex()}: CAPTCHA file upload failed")
+            sogs.plugin.log.error(f"Failed to create a CAPTCHA for user 0x{session_id.hex()}: CAPTCHA file upload failed")
             user.clear_posted_captcha()
             return oxenc.bt_serialize("ERROR");
 
@@ -823,9 +826,9 @@ class EmojiCaptchaPlugin(Plugin):
         else:
             body += EmojiCaptchaPlugin.attempt_limit_str
 
-        msg_id: Optional[MessageID] = self.post_message(room_token=room_token, body=body, whisper_to=user_id, relay_to_plugins=False, attachments_metadata=[captcha_attachment_metadata])
+        msg_id: Optional[sogs.types.MessageID] = self.post_message(room_token=room_token, body=body, whisper_to=user_id, relay_to_plugins=False, attachments_metadata=[captcha_attachment_metadata])
         if not msg_id:
-            log.error(f"Failed to create a CAPTCHA for user 0x{session_id.hex()}: Message post failed")
+            sogs.plugin.log.error(f"Failed to create a CAPTCHA for user 0x{session_id.hex()}: Message post failed")
             user.clear_posted_captcha()
             return oxenc.bt_serialize("ERROR");
 
@@ -838,24 +841,24 @@ class EmojiCaptchaPlugin(Plugin):
     @typing_extensions.override
     def on_reaction_posted(self, m: oxenmq.Message):
         """Process reactions on CAPTCHA messages (answer, refresh, or incorrect)."""
-        req = ReactionPosted.from_bencode(m.dataview()[0])
+        req = sogs.types.ReactionPosted.from_bencode(m.dataview()[0])
         user: Optional[UserCaptchaState] = self.get_user(req.session_id, req.room_token)
         if not user:
-            log.warning(f'Reaction {req.reaction} from unknown user 0x{req.session_id.hex()} in room {req.room_token}')
+            sogs.plugin.log.warning(f'Reaction {req.reaction} from unknown user 0x{req.session_id.hex()} in room {req.room_token}')
             return
 
         if user.posted_captcha_msg_id == req.msg_id and user.posted_captcha:
             if req.reaction == user.posted_captcha.answer:
                 user.captcha_solved_grant_access_at_ts = time.time() + self.write_timeout_s
                 user.captcha_state                     = CaptchaState.Solved
-                log.info(f"Access granted to 0x{req.session_id.hex()} in room '{req.room_token}'")
+                sogs.plugin.log.info(f"Access granted to 0x{req.session_id.hex()} in room '{req.room_token}'")
             elif req.reaction == self.refresh_emoji:
                 user.reactions_to_delete_on_tick.append(req.msg_id) # Enqueue refresh emoji to be deleted
                 user.refresh_state = RefreshState.Request
-                log.debug(f"Refresh reacted by 0x{req.session_id.hex()} in room '{req.room_token}'")
+                sogs.plugin.log.debug(f"Refresh reacted by 0x{req.session_id.hex()} in room '{req.room_token}'")
             else:
                 user.captcha_state = CaptchaState.IncorrectAnswer
-                log.debug(f"Incorrect emoji {req.reaction} reacted by 0x{req.session_id.hex()} in room '{req.room_token}'")
+                sogs.plugin.log.debug(f"Incorrect emoji {req.reaction} reacted by 0x{req.session_id.hex()} in room '{req.room_token}'")
 
             _ = self.tick(room_token=req.room_token, user_id=req.user_id, session_id=req.session_id, room_name=req.room_name)
 
@@ -871,10 +874,13 @@ def entry_point(ini_file: str = 'emoji_captcha.ini'):
     args     = parser.parse_args()
     ini_file = typing.cast(str, args.plugin_emoji_captcha_ini_path)
 
+    # Setup logger
+    sogs.plugin.log.name = '[EMOJI CAPTCHA]'
+    sogs.plugin.log.addHandler(sogs.plugin.console_log_handler)
+
     # Load common INI configuration
-    log.info(f"Loading Emoji CAPTCHA plugin config from {ini_file}")
-    log.name                    = '[EMOJI CAPTCHA]'
-    config: PluginConfigFromINI = Plugin.load_ini_from_path(ini_file)
+    sogs.plugin.log.info(f"Loading Emoji CAPTCHA plugin config from {ini_file}")
+    config: sogs.plugin.PluginConfigFromINI = sogs.plugin.Plugin.load_ini_from_path(ini_file)
     if not config.success:
         return
 
@@ -886,7 +892,7 @@ def entry_point(ini_file: str = 'emoji_captcha.ini'):
     refresh_timeout_s: Optional[int] = config.ini.getint('plugin_emoji_captcha', 'refresh_timeout_s',     fallback=None)
     write_timeout_s:   Optional[int] = config.ini.getint('plugin_emoji_captcha', 'write_timeout',         fallback=None)
     emoji_list_file:   str           = config.ini.get('plugin_emoji_captcha',    'emoji_list_file', fallback="")
-    ed_privkey:        bytes         = Plugin.get_or_make_ed25519_privkey(key_file)
+    ed_privkey:        bytes         = sogs.plugin.Plugin.get_or_make_ed25519_privkey(key_file)
 
     # Load the emoji list from disk if specified
     emoji_list: List[str] = []
@@ -934,12 +940,12 @@ def entry_point(ini_file: str = 'emoji_captcha.ini'):
         # In this example we are running the CAPTCHA plugin on a DB that is local to the application
         # and is trusted so we authorise ourselves directly into the plugins table thus making this
         # plugin completely standalone.
-        _ = Plugin.register_plugin_to_db(db_path      = 'sogs.db',
-                                         x_pubkey     = plugin.x_pubkey,
-                                         name         = 'Emoji CAPTCHA',
-                                         is_global    = True,
-                                         is_approver  = True,
-                                         is_subscribe = True)
+        _ = sogs.plugin.Plugin.register_plugin_to_db(db_path      = 'sogs.db',
+                                                     x_pubkey     = plugin.x_pubkey,
+                                                     name         = 'Emoji CAPTCHA',
+                                                     is_global    = True,
+                                                     is_approver  = True,
+                                                     is_subscribe = True)
         plugin.run()
     except Exception:
-        log.error("Exception raised in plugin. Terminating:\n{}".format(traceback.format_exc()))
+        sogs.plugin.log.error("Exception raised in plugin. Terminating:\n{}".format(traceback.format_exc()))
