@@ -8,6 +8,16 @@ from flask import request, abort, Response
 import json
 from typing import Dict, List, Tuple, Union
 
+
+def pretty_format_key_value_list(lines: List[Tuple[str, str]]) -> List[str]:
+    """Pad the keys so that values show up left-aligned, e.g:
+      key_a:           <value_1>
+      key_abit_longer: <value_2>
+    """
+    max_key_len = max(len(key) for key, _ in lines)
+    result      = [f"{key + ':':<{max_key_len + 1}} {value}" for key, value in lines]
+    return result
+
 def encode_base64(data: bytes):
     return base64.b64encode(data).decode()
 

@@ -16,7 +16,6 @@ from sogs.model.post import Post
 log                 = logging.Logger('PLUGIN')
 console_log_handler = logging.StreamHandler()
 console_log_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s'))
-log.addHandler(console_log_handler)
 
 class FilterResponse(enum.Enum):
     Accept = "OK"
@@ -169,8 +168,8 @@ class Plugin:
     blind25_privkey:      bytes               = dataclasses.field(init=False) # 32 byte 25-blinded x25519 privkey (w/o 25-prefix)
     blind15_pubkey:       bytes               = dataclasses.field(init=False) # 32 byte 15-blinded x25519 pubkey  (w/o 15-prefix)
     blind15_privkey:      bytes               = dataclasses.field(init=False) # 32 byte 15-blinded x25519 privkey (w/o 15-prefix)
-    x_pubkey:             bytes               = dataclasses.field(init=False) # 32 byte x25519 pubkey (non-blinded Session ID)
-    x_privkey:            bytes               = dataclasses.field(init=False) # 32 byte x25519 pubkey (non-blinded Session ID)
+    x_pubkey:             bytes               = dataclasses.field(init=False) # 32 byte x25519 pubkey  (non-blinded Session ID)
+    x_privkey:            bytes               = dataclasses.field(init=False) # 32 byte x25519 privkey (non-blinded Session ID)
     omq:                  oxenmq.OxenMQ       = dataclasses.field(init=False)
 
     @staticmethod
@@ -312,21 +311,12 @@ class Plugin:
         assert len(result) == sodium.crypto_sign_SECRETKEYBYTES
         return result
 
-    @staticmethod
-    def pretty_format_key_value_list(lines: List[Tuple[str, str]]) -> List[str]:
-        """Pad the keys so that values show up left-aligned, e.g:
-          key_a:           <value_1>
-          key_abit_longer: <value_2>
-        """
-        max_key_len = max(len(key) for key, _ in lines)
-        result      = [f"{key + ':':<{max_key_len + 1}} {value}" for key, value in lines]
-        return result
-
     def describe_config(self) -> List[Tuple[str, str]]:
         result: List[Tuple[str, str]] = [
             ("SOGS Address (Pubkey)",      f"{self.sogs_address} ({self.sogs_pubkey.hex()})"),
             ("Display Name",               self.display_name),
-            ("Session Account",            '05' + self.x_pubkey.hex()),
+            ("Ed25519 Pubkey",             self.ed_pubkey.hex()),
+            ("X25519 Pubkey",              self.x_pubkey.hex()),
             ("Session Account (Blind-15)", self.session_id.hex()),
         ]
         return result

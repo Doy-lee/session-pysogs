@@ -104,6 +104,7 @@ import typing
 import typing_extensions
 import sogs.plugin
 import sogs.types
+import sogs.utils
 import oxenmq
 import oxenc
 
@@ -620,8 +621,8 @@ class EmojiCaptchaPlugin(sogs.plugin.Plugin):
             ("CAPTCHA Retries",     f"{self.retry_limit}"),
         ])
 
-        log_line: str = "Plugin initialised:\n  " + "\n  ".join(sogs.plugin.Plugin.pretty_format_key_value_list(desc_lines))
-        log.info(log_line)
+        log_line: str = "Plugin initialised:\n  " + "\n  ".join(sogs.utils.pretty_format_key_value_list(desc_lines))
+        sogs.plugin.log.info(log_line)
 
     def get_user(self, session_id: bytes, room_token: bytes) -> Optional[UserCaptchaState]:
         result = None

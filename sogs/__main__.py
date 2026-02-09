@@ -2,6 +2,8 @@ from argparse import ArgumentParser as AP, RawDescriptionHelpFormatter, Action
 import atexit
 import re
 import sys
+import typing
+from typing import List, Tuple, Union
 
 from . import __version__ as version
 
@@ -19,6 +21,9 @@ Examples:
      # Add a global moderator visible as a moderator of all rooms:
     python3 -msogs --add-moderators 050123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef --rooms=+ --visible
 
+    # Add a plugin named 'My Plugin' with Ed25519 public key '012345...' and all permissions enabled:
+    python3 -msogs --add-plugin 0123456789abcdef... --plugin-name 'My Plugin' --plugin-global true --plugin-approver true --plugin-subscribe true
+
     # Set default read/write True and upload False on all rooms
     python3 -msogs --add-perms rw --remove-perms u --rooms='*'
 
@@ -27,6 +32,21 @@ Examples:
 
      # List room info:
     python3 -msogs -L
+
+     # List all plugins and their room configurations:
+    python3 -msogs --list-plugins
+
+     # Add a plugin to specific rooms by ID or Ed25519 pubkey (the plugin must have been added already via --add-plugin):
+    python3 -msogs --add-room-plugin 1                   --rooms my-room other-room --room-plugin-approver true --room-plugin-required false --room-plugin-subscribe true
+    python3 -msogs --add-room-plugin 0123456789abcdef... --rooms my-room            --room-plugin-approver true --room-plugin-required false --room-plugin-subscribe true
+
+     # Remove a plugin from specific rooms by ID or Ed25519 pubkey:
+    python3 -msogs --delete-room-plugin 1                  --rooms my-room other-room
+    python3 -msogs --delete-room-plugin 012345789abcdef... --rooms my-room
+
+     # Delete a plugin entirely by ID or Ed25519 pubkey (and from any room using it):
+    python3 -msogs --delete-plugin 1
+    python3 -msogs --delete-plugin 0123456789abcdef...
 
 A sogs.ini will be loaded from the current directory, if one exists.  You can override this by
 specifying a path to the config file to load in the SOGS_CONFIG environment variable.
@@ -114,11 +134,71 @@ ap.add_argument(
     "admin/moderator. '+' is not valid for setting permissions. If a single room name "
     "of '*' is given then the changes take effect on each of the server's current rooms.",
 )
-ap.add_argument(
-    '--add-plugin',
-    help="Add given key (as hex) as a plugin (need to edit db to configure it for now, this is "
-    "just to get the key into the db as a utf-8 string, as a convenience for testing)",
-)
+
+# Add plugin commands
+ap.add_argument('--add-plugin',
+                help="Add or update a plugin's Ed25519 public key (64 hex chars). Requires "
+                "--plugin-name, --plugin-global, --plugin-approver, and --plugin-subscribe.",
+                metavar='ED25519_PUBKEY')
+ap.add_argument('--plugin-name',
+                help="Human-readable name for the plugin (required with --add-plugin)",
+                metavar='NAME')
+ap.add_argument('--plugin-global',
+                type=str,
+                choices=['true', 'false'],
+                help="If true, plugin applies to all rooms (required with --add-plugin)",
+                metavar='true|false')
+ap.add_argument('--plugin-approver',
+                type=str,
+                choices=['true', 'false'],
+                help="If true, plugin can deny/disapprove messages (required with --add-plugin)",
+                metavar='true|false')
+ap.add_argument('--plugin-subscribe',
+                type=str,
+                choices=['true', 'false'],
+                help="If true, plugin receives new message notifications (required with --add-plugin)",
+                metavar='true|false')
+
+# Room plugin management
+_ = ap.add_argument('--add-room-plugin',
+                    type=str,
+                    help=("Add a plugin to specific room(s). Accepts plugin ID (numeric) or Ed25519 "
+                          "public key (64 hex chars). Requires --rooms, --room-plugin-approver, "
+                          "--room-plugin-required, and --room-plugin-subscribe."),
+                    metavar='PLUGIN_ID_OR_KEY')
+_ = ap.add_argument('--room-plugin-approver',
+                    type=str,
+                    choices=['true', 'false'],
+                    help=("If true, plugin can deny/disapprove messages in these rooms (required "
+                          "with --add-room-plugin)"),
+                    metavar='true|false')
+_ = ap.add_argument('--room-plugin-required',
+                    type=str,
+                    choices=['true', 'false'],
+                    help=("If true, plugin's approval is required for messages in these rooms "
+                          "(required with --add-room-plugin)"),
+                    metavar='true|false')
+_ = ap.add_argument('--room-plugin-subscribe',
+                    type=str,
+                    choices=['true', 'false'],
+                    help=("If true, plugin receives all new messages in these rooms "
+                          "(required with --add-room-plugin)"),
+                    metavar='true|false')
+
+# Plugin deletion
+delete_plugin_group = ap.add_mutually_exclusive_group()
+_ = delete_plugin_group.add_argument('--delete-plugin',
+                type=str,
+                help=("Delete a plugin entirely (including all room associations). Accepts plugin "
+                      "ID (numeric) or Ed25519 public key (64 hex chars)."),
+                metavar='PLUGIN_ID_OR_KEY')
+
+_ = delete_plugin_group.add_argument('--delete-room-plugin',
+                type=str,
+                help=("Remove a plugin from specific room(s). Accepts plugin ID (numeric) or "
+                      "Ed25519 public key (64 hex chars). Requires --rooms."),
+                metavar='PLUGIN_ID_OR_KEY')
+
 vis_group = ap.add_mutually_exclusive_group()
 vis_group.add_argument(
     '--visible',
@@ -133,12 +213,10 @@ vis_group.add_argument(
     "global mods, but not for room mods",
 )
 
-ap.add_argument(
-    "--list-rooms", "-L", action='store_true', help="List current rooms and basic stats"
-)
-ap.add_argument(
-    '--list-global-mods', '-M', action='store_true', help="List global moderators/admins"
-)
+_ = ap.add_argument("--list-rooms", "-L", action='store_true', help="List current rooms and basic stats")
+_ = ap.add_argument('--list-global-mods', '-M', action='store_true', help="List global moderators/admins")
+_ = ap.add_argument("--list-plugins", "-P", action='store_true', help="List all registered plugins and their room configurations")
+
 ap.add_argument(
     "--verbose",
     "-v",
@@ -169,6 +247,35 @@ ap.add_argument(
     "upgrades are needed, 5 if required upgrades were detected.",
 )
 
+def _resolve_plugin_id(plugin_id_or_key: str) -> int:
+    if plugin_id_or_key.isdigit():
+        return int(plugin_id_or_key)
+
+    if len(plugin_id_or_key) != 64:
+        raise ValueError(
+            "Invalid plugin identifier: must be numeric ID or 64-char hex Ed25519 key")
+
+    try:
+        ed_pubkey = bytes.fromhex(plugin_id_or_key)
+    except ValueError:
+        raise ValueError(f"Invalid hex string: '{plugin_id_or_key}'")
+
+    if len(ed_pubkey) != 32:
+        raise ValueError(
+            "Invalid Ed25519 public key: must be 64 hex characters (32 bytes)")
+
+    import nacl.bindings as sodium
+    x_pubkey = sodium.crypto_sign_ed25519_pk_to_curve25519(ed_pubkey)
+
+    from .db import query
+    plugin = query("SELECT id FROM plugins WHERE auth_key = :key", key=x_pubkey).first()
+
+    if not plugin:
+        raise ValueError(
+            f"No plugin found with Ed25519 public key '{plugin_id_or_key}'")
+    return plugin['id']
+
+
 args = ap.parse_args()
 
 update_room = not args.add_room and (
@@ -186,16 +293,65 @@ incompat = [
     ('room modifiers', update_room),
     ('--list-rooms', args.list_rooms),
     ('--list-global-mods', args.list_global_mods),
+    ('--list-plugins', args.list_plugins),
     ('--initialize', args.initialize),
     ('--upgrade', args.upgrade),
     ('--check-upgrades', args.check_upgrades),
     ('--add-plugin', args.add_plugin),
+    ('--add-room-plugin', args.add_room_plugin),
+    ('--delete-room-plugin', args.delete_room_plugin),
+    ('--delete-plugin', args.delete_plugin),
 ]
 for i in range(1, len(incompat)):
     for j in range(0, i):
         if incompat[j][1] and incompat[i][1]:
             print(f"Error: {incompat[j][0]} and {incompat[i][0]} are incompatible", file=sys.stderr)
             sys.exit(1)
+
+# Validate --add-plugin companion arguments
+if args.add_plugin:
+    missing = []
+    if args.plugin_name is None:
+        missing.append('--plugin-name')
+    if args.plugin_global is None:
+        missing.append('--plugin-global')
+    if args.plugin_approver is None:
+        missing.append('--plugin-approver')
+    if args.plugin_subscribe is None:
+        missing.append('--plugin-subscribe')
+    if missing:
+        print(f"Error: --add-plugin requires: {', '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
+
+# Validate --add-room-plugin arguments
+if args.add_room_plugin:
+    if not args.rooms:
+        print("Error: --add-room-plugin requires --rooms", file=sys.stderr)
+        sys.exit(1)
+    if '+' in args.rooms or '*' in args.rooms:
+        print("Error: --add-room-plugin requires specific room tokens, not '+' or '*'",
+              file=sys.stderr)
+        sys.exit(1)
+    missing = []
+    if args.room_plugin_approver is None:
+        missing.append('--room-plugin-approver')
+    if args.room_plugin_required is None:
+        missing.append('--room-plugin-required')
+    if args.room_plugin_subscribe is None:
+        missing.append('--room-plugin-subscribe')
+    if missing:
+        print(f"Error: --add-room-plugin requires: {', '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
+
+# Validate --delete-room-plugin arguments
+if args.delete_room_plugin:
+    if not args.rooms:
+        print("Error: --delete-room-plugin requires --rooms", file=sys.stderr)
+        sys.exit(1)
+    if '+' in args.rooms or '*' in args.rooms:
+        print("Error: --delete-room-plugin requires specific room tokens, not '+' or '*'",
+              file=sys.stderr)
+        sys.exit(1)
 
 if update_room and not args.rooms:
     print(
@@ -599,20 +755,255 @@ elif args.list_global_mods:
     for u in hm:
         print(f"- {u.session_id} (hidden moderator)")
 
-elif args.add_plugin:
-    from nacl.signing import SigningKey
-    from nacl.encoding import HexEncoder
-
-    plugin_key = SigningKey(HexEncoder.decode(args.add_plugin))
+elif args.list_plugins:
     from .db import query
 
-    with db.transaction():
-        query(
-            "INSERT INTO plugins (auth_key, global, approver, subscribe) VALUES (:key, 1, 1, 1)",
-            key=plugin_key.encode(),
-        )
+    # Get all plugins
+    plugins = query("SELECT id, name, auth_key, global, approver, subscribe FROM plugins ORDER BY id").all()
 
-    print(f"Plugin({args.add_plugin}) has been added.")
+    if not plugins:
+        print("No plugins registered.")
+    else:
+        for index, plugin in enumerate(plugins):
+            plugin_id      = plugin['id']
+            name           = plugin['name']
+            global_flag    = bool(plugin['global'])
+            approver_flag  = bool(plugin['approver'])
+            subscribe_flag = bool(plugin['subscribe'])
+
+            print(f"[{index:02d}] '{name}' (Plugin ID={plugin_id})")
+            print(f"  X25519 Pubkey:             {plugin['auth_key'].hex()}")
+            print(f"  Global/Approver/Subscribe: {global_flag}/{approver_flag}/{subscribe_flag}")
+
+            # Get room_plugins for this plugin
+            room_plugins = query(
+                "SELECT rp.room, r.token, rp.approver, rp.required, rp.subscribe "
+                "FROM room_plugins rp JOIN rooms r ON rp.room = r.id "
+                "WHERE rp.plugin = :plugin_id ORDER BY r.token",
+                plugin_id=plugin_id
+            ).all()
+
+            if room_plugins:
+                print(f"  Rooms ({len(room_plugins)})")
+                for rp in room_plugins:
+                    room_id = rp['room']
+                    room_token = rp['token']
+                    rp_approver = bool(rp['approver'])
+                    rp_required = bool(rp['required'])
+                    rp_subscribe = bool(rp['subscribe'])
+
+                    print(f"    [{room_id:02d}] {room_token}")
+                    print(f"      Room ID:   {room_id}")
+                    print(f"      Approver:  {rp_approver}")
+                    print(f"      Required:  {rp_required}")
+                    print(f"      Subscribe: {rp_subscribe}")
+            else:
+                print("  Rooms (0)")
+
+            print()  # Empty line between plugins
+
+elif typing.cast(bool, args.add_plugin):
+    import nacl.bindings as sodium
+    try:
+        ed_pubkey = bytes.fromhex(args.add_plugin)
+    except ValueError:
+        print(f"Error: '{args.add_plugin}' is not a valid hex string", file=sys.stderr)
+        sys.exit(1)
+
+    if len(ed_pubkey) != sodium.crypto_sign_PUBLICKEYBYTES:
+        print((f"Error: Ed25519 public key must be {sodium.crypto_sign_PUBLICKEYBYTES} bytes "
+              f"({sodium.crypto_sign_PUBLICKEYBYTES * 2} hex chars), got {len(ed_pubkey)} bytes"),
+              file=sys.stderr)
+        sys.exit(1)
+
+    # Convert Ed25519 public key to x25519 for storage
+    x_pubkey    = sodium.crypto_sign_ed25519_pk_to_curve25519(ed_pubkey)
+    plugin_name = typing.cast(str, args.plugin_name)
+
+    # Parse boolean flags
+    is_global    = args.plugin_global    == 'true'
+    is_approver  = args.plugin_approver  == 'true'
+    is_subscribe = args.plugin_subscribe == 'true'
+
+    from .db import query
+    with db.transaction():
+        # Check if plugin already exists
+        existing = query("SELECT id, name, global, approver, subscribe FROM plugins WHERE auth_key = :key", key=x_pubkey).first()
+
+        fields: List[Tuple[str, str]] = []
+        fields.append(("Ed25519 Pubkey", f"{x_pubkey.hex()}"))
+        if existing is None:
+            plugin_id = db.insert_and_get_pk(
+                "INSERT INTO plugins (name, auth_key, global, approver, subscribe) "
+                "VALUES (:name, :key, :is_global, :is_approver, :is_subscribe)",
+                'id',
+                name         = args.plugin_name,
+                key          = x_pubkey,
+                is_global    = is_global,
+                is_approver  = is_approver,
+                is_subscribe = is_subscribe,)
+
+            # Build list of all fields with change status
+            fields.append(("Name",      f"'{args.plugin_name}'"))
+            fields.append(("Global",    f"{is_global}"))
+            fields.append(("Approver",  f"{is_approver}"))
+            fields.append(("Subscribe", f"{is_subscribe}"))
+        else:
+            # Plugin exists - check what changed
+            plugin_id:     int  = existing['id']
+            old_name:      str  = existing['name']
+            old_global:    bool = bool(existing['global'])
+            old_approver:  bool = bool(existing['approver'])
+            old_subscribe: bool = bool(existing['subscribe'])
+
+            # Build list of all fields with change status
+            fields.append(("Name",      f"'{old_name}' "      + f"-> '{plugin_name}'" if old_name      != plugin_name  else "(unchanged)"))
+            fields.append(("Global",    f"'{old_global}' "    + f"->  {is_global}"    if old_global    != is_global    else "(unchanged)"))
+            fields.append(("Approver",  f"'{old_approver}' "  + f"->  {is_approver}"  if old_approver  != is_approver  else "(unchanged)"))
+            fields.append(("Subscribe", f"'{old_subscribe}' " + f"->  {is_subscribe}" if old_subscribe != is_subscribe else "(unchanged)"))
+
+            has_changes = (old_name != plugin_name or old_global != is_global or old_approver != is_approver or old_subscribe != is_subscribe)
+            if has_changes:
+                query("UPDATE plugins SET name = :name, global = :is_global, approver = :is_approver, subscribe = :is_subscribe WHERE id = :id",
+                      name         = plugin_name,
+                      is_global    = is_global,
+                      is_approver  = is_approver,
+                      is_subscribe = is_subscribe,
+                      id           = plugin_id,)
+
+        from sogs.utils import pretty_format_key_value_list
+        print(f"Plugin '{plugin_name}' (id={plugin_id}):" + "\n  ".join(pretty_format_key_value_list(fields)))
+
+elif typing.cast(bool, args.add_room_plugin):
+    # Resolve plugin identifier
+    try:
+        plugin_id = _resolve_plugin_id(args.add_room_plugin)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Parse boolean flags
+    room_plugin_approver  = args.room_plugin_approver == 'true'
+    room_plugin_required  = args.room_plugin_required == 'true'
+    room_plugin_subscribe = args.room_plugin_subscribe == 'true'
+
+    # Verify plugin exists
+    from .db import query
+    plugin = query("SELECT id, name FROM plugins WHERE id = :id", id=plugin_id).first()
+    if not plugin:
+        print(f"Error: Plugin with ID {plugin_id} not found", file=sys.stderr)
+        sys.exit(1)
+
+    # Process each room
+    plugin_name: str = plugin['name'] or f"Plugin {plugin_id}"
+    for room_token in args.rooms:
+        try:
+            room = Room(token=room_token)
+
+            with db.transaction():
+                # Check if entry already exists
+                existing = query(
+                    "SELECT approver, required, subscribe FROM room_plugins "
+                    "WHERE plugin = :plugin_id AND room = :room_id",
+                    plugin_id=plugin_id,
+                    room_id=room.id
+                ).first()
+
+                fields: List[Tuple[str, str]] = []
+                fields.append(("Room", f"{room_token}"))
+                if existing:
+                    old_approver  = bool(existing['approver'])
+                    old_required  = bool(existing['required'])
+                    old_subscribe = bool(existing['subscribe'])
+                    has_changes   = (old_approver != room_plugin_approver or old_required != room_plugin_required or old_subscribe != room_plugin_subscribe)
+                    if has_changes:
+                        query(
+                            "UPDATE room_plugins SET approver = :approver, "
+                            "required = :required, subscribe = :subscribe "
+                            "WHERE plugin = :plugin_id AND room = :room_id",
+                            approver=room_plugin_approver,
+                            required=room_plugin_required,
+                            subscribe=room_plugin_subscribe,
+                            plugin_id=plugin_id,
+                            room_id=room.id
+                        )
+                    fields.append(("Required",  f"'{old_required}' "  + f"->  {room_plugin_required}"  if old_required  != room_plugin_required  else "(unchanged)"))
+                    fields.append(("Approver",  f"'{old_approver}' "  + f"->  {room_plugin_approver}"  if old_approver  != room_plugin_approver  else "(unchanged)"))
+                    fields.append(("Subscribe", f"'{old_subscribe}' " + f"->  {room_plugin_subscribe}" if old_subscribe != room_plugin_subscribe else "(unchanged)"))
+                else:
+                    query(
+                        "INSERT INTO room_plugins (plugin, room, approver, required, subscribe) "
+                        "VALUES (:plugin_id, :room_id, :approver, :required, :subscribe)",
+                        plugin_id = plugin_id,
+                        room_id   = room.id,
+                        approver  = room_plugin_approver,
+                        required  = room_plugin_required,
+                        subscribe = room_plugin_subscribe
+                    )
+
+                    fields.append(("Required",  f"{room_plugin_required}"))
+                    fields.append(("Approver",  f"{room_plugin_approver}"))
+                    fields.append(("Subscribe", f"{room_plugin_subscribe}"))
+
+                from sogs.utils import pretty_format_key_value_list
+                print(f"Room plugin '{plugin_name}' (id={plugin_id}):" + "\n  ".join(pretty_format_key_value_list(fields)))
+
+        except NoSuchRoom:
+            print(f"Error: Room '{room_token}' not found", file=sys.stderr)
+
+elif typing.cast(bool, args.delete_room_plugin):
+    try:
+        plugin_id = _resolve_plugin_id(typing.cast(str, args.delete_room_plugin))
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Verify plugin exists
+    from .db import query
+    plugin = query("SELECT id, name FROM plugins WHERE id = :id", id=plugin_id).first()
+    if not plugin:
+        print(f"Error: Plugin with ID {plugin_id} not found", file=sys.stderr)
+        sys.exit(1)
+
+    plugin_name = plugin['name'] or f"Plugin {plugin_id}"
+    for room_token in args.rooms:
+        try:
+            room = Room(token=room_token)
+            with db.transaction():
+                result = query("DELETE FROM room_plugins WHERE plugin = :plugin_id AND room = :room_id", plugin_id=plugin_id, room_id=room.id)
+                if result.rowcount > 0:
+                    print(f"Removed '{plugin_name}' from room '{room_token}'")
+                else:
+                    print(f"'{plugin_name}' was not configured for room '{room_token}'")
+        except NoSuchRoom:
+            print(f"Error: Room '{room_token}' not found", file=sys.stderr)
+
+elif typing.cast(bool, args.delete_plugin):
+    try:
+        plugin_id = _resolve_plugin_id(typing.cast(str, args.delete_plugin))
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    from .db import query
+    plugin = query("SELECT id, name FROM plugins WHERE id = :id", id=plugin_id).first()
+    if not plugin:
+        print(f"Error: Plugin with ID {plugin_id} not found", file=sys.stderr)
+        sys.exit(1)
+
+    plugin_name = plugin['name'] or f"Plugin {plugin_id}"
+
+    # Check for room associations
+    room_count = query("SELECT COUNT(*) as count FROM room_plugins WHERE plugin = :plugin_id", plugin_id=plugin_id).first()['count']
+
+    # Delete plugin (room_plugins will be cascade deleted)
+    with db.transaction():
+        query("DELETE FROM plugins WHERE id = :id", id=plugin_id)
+
+    if room_count:
+        print(f"Deleted plugin '{plugin_name}' (ID={plugin_id}) and removed from {room_count} room(s)")
+    else:
+        print(f"Deleted plugin '{plugin_name}' (ID={plugin_id})")
 
 else:
     print("Error: no action given", file=sys.stderr)

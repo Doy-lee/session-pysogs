@@ -1,8 +1,14 @@
 import dataclasses
 import json
+import logging
 import typing
-from sogs.plugin import *
+from typing import Dict, List, Tuple
+
+from sogs.plugin import Plugin
 from sogs.types import bt_value
+from sogs.utils import pretty_format_key_value_list
+
+log = logging.getLogger(__name__)
 
 @dataclasses.dataclass
 class SlashTestPlugin(Plugin):
@@ -17,7 +23,7 @@ class SlashTestPlugin(Plugin):
 
         # NOTE: Print some startup diagnostics
         desc_lines: List[Tuple[str, str]] = self.describe_config()
-        log_line:   str                   = "Plugin initialised:\n  " + "\n  ".join(Plugin.pretty_format_key_value_list(desc_lines))
+        log_line:   str                   = "Plugin initialised:\n  " + "\n  ".join(pretty_format_key_value_list(desc_lines))
         log.info(log_line)
 
 
