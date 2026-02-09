@@ -610,12 +610,15 @@ class EmojiCaptchaPlugin(Plugin):
         # read or otherwise require them to solve captcha to proceed.
         self.register_request_read_handler(self.handle_request_read)
 
-        log.info("Plugin initialised: refresh {}s; retry {}s; write {}s; captcha limit {}; x25519 pubkey {}"
-                 .format(self.refresh_timeout_s,
-                         self.retry_timeout_s,
-                         self.write_timeout_s,
-                         self.retry_limit,
-                         self.x_pubkey.hex()))
+        # NOTE: Print some startup diagnostics
+        desc_lines: List[Tuple[str, str]] = self.describe_config()
+        desc_lines.extend([
+            ("Refresh/Retry/Write", f"{self.refresh_timeout_s}s/{self.retry_timeout_s}s/{self.write_timeout_s}s"),
+            ("CAPTCHA Retries",     f"{self.retry_limit}"),
+        ])
+
+        log_line: str = "Plugin initialised:\n  " + "\n  ".join(Plugin.pretty_format_key_value_list(desc_lines))
+        log.info(log_line)
 
     def get_user(self, session_id: bytes, room_token: bytes) -> Optional[UserCaptchaState]:
         result = None
@@ -870,7 +873,7 @@ def entry_point(ini_file: str = 'emoji_captcha.ini'):
 
     # Load common INI configuration
     log.info(f"Loading Emoji CAPTCHA plugin config from {ini_file}")
-    log.name                    = 'CAPTCHA'
+    log.name                    = '[EMOJI CAPTCHA]'
     config: PluginConfigFromINI = Plugin.load_ini_from_path(ini_file)
     if not config.success:
         return
@@ -931,10 +934,12 @@ def entry_point(ini_file: str = 'emoji_captcha.ini'):
         # In this example we are running the CAPTCHA plugin on a DB that is local to the application
         # and is trusted so we authorise ourselves directly into the plugins table thus making this
         # plugin completely standalone.
-        import sqlite3
-        with sqlite3.connect('sogs.db') as conn:
-            _ = conn.execute("INSERT OR IGNORE INTO plugins (name, auth_key, global, approver, subscribe) VALUES ('Emoji Captcha', ?, 1, 1, 1)", (plugin.x_pubkey,))
-
+        _ = Plugin.register_plugin_to_db(db_path      = 'sogs.db',
+                                         x_pubkey     = plugin.x_pubkey,
+                                         name         = 'Emoji CAPTCHA',
+                                         is_global    = True,
+                                         is_approver  = True,
+                                         is_subscribe = True)
         plugin.run()
     except Exception:
         log.error("Exception raised in plugin. Terminating:\n{}".format(traceback.format_exc()))

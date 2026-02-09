@@ -6,11 +6,10 @@ import oxenc
 import logging
 import enum
 import typing_extensions
-import datetime
 import configparser
 
 from .types import SessionID, MessageID, bt_value, PluginInsertMessage, RoomAddPostRequest, ReactionPosted
-from typing          import Callable, Dict, List, Optional, Union
+from typing          import Callable, Dict, List, Optional, Tuple, Union, Tuple
 from datetime        import timedelta
 from sogs.model.post import Post
 
@@ -130,6 +129,18 @@ class SetUserRoomPermissions:
         return result
 
 @dataclasses.dataclass
+class RegisterPluginResult:
+    plugin_id:    int
+    was_inserted: bool
+
+@dataclasses.dataclass
+class RegisterPluginToRoomConfig:
+    room:      Union[int, bytes] # Room identifier - either the room ID (int) or token (bytes).
+    approver:  bool = False      # If True, the plugin can deny/disapprove messages in this room.
+    required:  bool = False      # If True, the plugin's approval is required for messages in this room.
+    subscribe: bool = True       # If True, the plugin receives notifications for all new messages in this room.
+
+@dataclasses.dataclass
 class PluginConfigFromINI:
     ini:          configparser.ConfigParser = dataclasses.field(default_factory=lambda: configparser.ConfigParser(strict=False))
     success:      bool                      = False
@@ -164,6 +175,96 @@ class Plugin:
     omq:                  oxenmq.OxenMQ       = dataclasses.field(init=False)
 
     @staticmethod
+    def register_plugin_to_db(db_path: str, x_pubkey: bytes, name: str, is_global: bool, is_approver: bool, is_subscribe: bool) -> RegisterPluginResult:
+        """Inserts a new plugin record into the `plugins` table with the x25519 public key.
+
+        The plugin sends requests via OxenMQ to SOGS which is authenticated by signing their request
+        with the x25519 key. The SOGS will lookup plugin associated with the request and verify the
+        request before proceeding.
+
+        Important:
+            This method requires direct filesystem access to the SOGS database. If the
+            plugin runs on a different machine than the SOGS server (e.g., for isolation
+            or security reasons), this method cannot be used. In such cases, the operator
+            must manually add the plugin entry to the SOGS database to authorise it.
+
+        Args:
+            db_path: Path to the SOGS SQLite database file.
+            x_pubkey: The plugin's 32-byte x25519 public key used for authentication.
+                      This becomes the `auth_key` in the database.
+            name: Human-readable name for the plugin (for operator bookkeeping).
+            is_global: If True, the plugin is applied to all messages across all rooms.
+                       If False, use `register_plugin_to_rooms` to specify which rooms
+                       the plugin should be active in.
+            is_approver: If True, the plugin can deny/disapprove messages.
+            is_subscribe: If True, the plugin receives notifications for all new messages.
+
+        Returns:
+            PluginRegistrationResult containing:
+            - plugin_id: The database ID of the plugin (existing or newly created).
+            - was_inserted: True if a new plugin was created, False if it already existed.
+
+        Raises:
+            AssertionError: If x_pubkey is not exactly 32 bytes.
+        """
+        assert len(x_pubkey) == sodium.crypto_sign_PUBLICKEYBYTES, "`x_pubkey` must be the plugin's 32 byte x25519 public key"
+        import sqlite3
+        plugin_id: int = 0
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO plugins (name, auth_key, global, approver, subscribe) VALUES (?, ?, ?, ?, ?)",
+                (name, x_pubkey, is_global, is_approver, is_subscribe)
+            )
+            was_inserted = cursor.rowcount > 0
+
+            row       = typing.cast(Tuple[int], conn.execute("SELECT id FROM plugins WHERE auth_key = ?", (x_pubkey,)).fetchone())
+            plugin_id = row[0]
+
+        result = RegisterPluginResult(plugin_id=plugin_id, was_inserted=was_inserted)
+        return result
+
+    @staticmethod
+    def register_plugin_to_rooms(db_path: str, plugin_id: int, rooms: List[RegisterPluginToRoomConfig], delete: bool = False) -> None:
+        """Add or remove a plugin to be enabled in the specified list of rooms.
+
+        This function is only useful for plugins that have their `global` flag set to false which
+        means that the plugin is not being used on all rooms and instead must be specifically
+        enabled per-room via this function.
+
+        Args:
+            db_path: Path to the SOGS SQLite database file.
+            plugin_id: The plugin's database ID (from `register_plugin_to_db`).
+            rooms: List of RoomPluginConfig specifying room and permission settings.
+                   Each room can be identified by ID (int) or token (bytes).
+            delete: If False (default), adds the plugin to the specified rooms.
+                    If True, removes the plugin from the specified rooms (permission
+                    fields in RoomPluginConfig are ignored).
+
+        Raises:
+            ValueError: If a room token does not resolve to a valid room ID.
+            sqlite3.IntegrityError: If plugin_id does not exist in the plugins table.
+        """
+        import sqlite3
+        with sqlite3.connect(db_path) as conn:
+            for room_config in rooms:
+                # Resolve room identifier to ID
+                room_id: int = 0
+                if isinstance(room_config.room, bytes):
+                    row = conn.execute("SELECT id FROM rooms WHERE token = ?", (room_config.room.decode('utf-8'),)).fetchone()
+                    if row is None:
+                        raise ValueError(f"Room token '{room_config.room.decode('utf-8')}' does not exist")
+                    room_id = row[0]
+                else:
+                    room_id = room_config.room
+
+                # Execute action
+                if delete:
+                    _ = conn.execute("DELETE FROM room_plugins WHERE plugin = ? AND room = ?", (plugin_id, room_id))
+                else:
+                    _ = conn.execute("INSERT OR IGNORE INTO room_plugins (plugin, room, approver, required, subscribe) VALUES (?, ?, ?, ?, ?)",
+                                    (plugin_id, room_id, room_config.approver, room_config.required, room_config.subscribe))
+
+    @staticmethod
     def load_ini_from_path(ini_path: str) -> PluginConfigFromINI:
         from sogs import config as sogs_config
 
@@ -176,7 +277,7 @@ class Plugin:
             return PluginConfigFromINI()
 
         # Load fields common to all plugins
-        sogs_address:    str        = parsed_ini.get('plugin', 'sogs_address',    fallback=sogs_config.OMQ_LISTEN)
+        sogs_address:    str           = parsed_ini.get('plugin', 'sogs_address',    fallback=sogs_config.OMQ_LISTEN)
         sogs_pubkey_hex: Optional[str] = parsed_ini.get('plugin', 'sogs_pubkey_hex', fallback=None)
 
         # Convert pubkey to bytes
@@ -210,6 +311,25 @@ class Plugin:
             bytes_written = dest_path.write_bytes(result)
             assert bytes_written == sodium.crypto_sign_SECRETKEYBYTES, f"Failed to write plugin key to {key_file}, aborting"
         assert len(result) == sodium.crypto_sign_SECRETKEYBYTES
+        return result
+
+    @staticmethod
+    def pretty_format_key_value_list(lines: List[Tuple[str, str]]) -> List[str]:
+        """Pad the keys so that values show up left-aligned, e.g:
+          key_a:           <value_1>
+          key_abit_longer: <value_2>
+        """
+        max_key_len = max(len(key) for key, _ in lines)
+        result      = [f"{key + ':':<{max_key_len + 1}} {value}" for key, value in lines]
+        return result
+
+    def describe_config(self) -> List[Tuple[str, str]]:
+        result: List[Tuple[str, str]] = [
+            ("SOGS Address (Pubkey)",      f"{self.sogs_address} ({self.sogs_pubkey.hex()})"),
+            ("Display Name",               self.display_name),
+            ("Session Account",            '05' + self.x_pubkey.hex()),
+            ("Session Account (Blind-15)", self.session_id.hex()),
+        ]
         return result
 
     def __post_init__(self):

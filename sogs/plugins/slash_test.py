@@ -14,7 +14,12 @@ class SlashTestPlugin(Plugin):
         self.register_pre_command('/test_handled', self.handle_pre_slash)
         self.register_post_command('/test_handled', self.handle_post_slash)
         self.register_pre_command('/get_file', self.handle_get_file)
-        log.info("Plugin initialised: x25519 pubkey {}".format(self.x_pubkey.hex()))
+
+        # NOTE: Print some startup diagnostics
+        desc_lines: List[Tuple[str, str]] = self.describe_config()
+        log_line:   str                   = "Plugin initialised:\n  " + "\n  ".join(Plugin.pretty_format_key_value_list(desc_lines))
+        log.info(log_line)
+
 
     def handle_pre_slash(self, request: Dict[bytes, bt_value], command_parts: List[str]) -> bool:
         print(f"slash pre-insertion command: {json.dumps(request, indent=1)} {command_parts}")
@@ -68,7 +73,7 @@ def entry_point(ini_path: str = 'slash_test.ini'):
 
     # Load common INI configuration
     log.info(f"Loading Slash Test plugin config from {ini_path}")
-    log.name                    = 'SLASH_TEST'
+    log.name                    = '[SLASH TEST]'
     config: PluginConfigFromINI = Plugin.load_ini_from_path(ini_path)
     if not config.success:
         return
@@ -81,13 +86,12 @@ def entry_point(ini_path: str = 'slash_test.ini'):
     try:
         # Instantiate the plugin
         plugin = SlashTestPlugin(sogs_address=config.sogs_address, sogs_pubkey=config.sogs_pubkey, ed_privkey=ed_privkey, display_name=display_name)
-
-        from sogs.web import app
-        with app.app_context():
-            import sogs.db
-            with sogs.db.transaction():
-                sogs.db.query("INSERT OR IGNORE INTO plugins (name, auth_key, global, approver, subscribe) VALUES ('Slash Test', :key, 1, 1, 1)", key=plugin.x_pubkey)
-
+        _ = Plugin.register_plugin_to_db(db_path      = 'sogs.db',
+                                         x_pubkey     = plugin.x_pubkey,
+                                         name         = 'Slash Test',
+                                         is_global    = True,
+                                         is_approver  = True,
+                                         is_subscribe = True)
         plugin.run()
     except Exception:
         log.error("Exception raised in plugin. Terminating:\n{}".format(traceback.format_exc()))
