@@ -3,6 +3,7 @@ import json
 import logging
 import typing
 from typing import Dict, List, Tuple
+import sogs.plugin
 
 from sogs.plugin import Plugin
 from sogs.types import bt_value
@@ -24,7 +25,7 @@ class SlashTestPlugin(Plugin):
         # NOTE: Print some startup diagnostics
         desc_lines: List[Tuple[str, str]] = self.describe_config()
         log_line:   str                   = "Plugin initialised:\n  " + "\n  ".join(pretty_format_key_value_list(desc_lines))
-        log.info(log_line)
+        sogs.plugin.log.info(log_line)
 
 
     def handle_pre_slash(self, request: Dict[bytes, bt_value], command_parts: List[str]) -> bool:
@@ -77,10 +78,13 @@ def entry_point(ini_path: str = 'slash_test.ini'):
     args     = parser.parse_args()
     ini_path = typing.cast(str, args.plugin_slash_test_ini_path)
 
+    # Setup logger
+    sogs.plugin.log.name = '[SLASH TEST]'
+    sogs.plugin.log.addHandler(sogs.plugin.console_log_handler)
+
     # Load common INI configuration
-    log.info(f"Loading Slash Test plugin config from {ini_path}")
-    log.name                    = '[SLASH TEST]'
-    config: PluginConfigFromINI = Plugin.load_ini_from_path(ini_path)
+    sogs.plugin.log.info(f"Loading Slash Test plugin config from {ini_path}")
+    config: sogs.plugin.PluginConfigFromINI = Plugin.load_ini_from_path(ini_path)
     if not config.success:
         return
 

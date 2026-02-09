@@ -91,6 +91,7 @@ ap.add_argument(
     metavar='SESSIONID',
     help="Add the given Session ID(s) as a moderator of the room given by --rooms",
 )
+
 ap.add_argument(
     '--delete-moderators',
     nargs='+',
