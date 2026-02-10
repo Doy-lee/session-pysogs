@@ -9,11 +9,47 @@
   with each request consuming an attempt. If the user consumes all 3 attempts then they are unable
   to join the server and must contact the room administrator for manual intervention.
 
-  The plugin can be parameterized via the following methods:
+Getting Started:
+  Setup the .ini config file (see the configuration section below for more details) with the desired
+  parameters and then you can run the plugin standalone:
 
-    - Pass the --config flag to the path: `python emoji_captcha.py --config /path/to/config.ini`
+    cd session-pysogs
+    python3 -m sogs.plugins.emoji_captcha --plugin_emoji_captcha_ini_path <path/to/plugin/config.ini>
+
+  Alternatively you can run the plugin alongside the SOGS server as a UWSGI mule. In your UWSGI .ini
+  config file, add to the [uwsgi] section:
+
+    [uwsgi]
+    mule = sogs.plugins.emoji_captcha
+    env  = PLUGIN_EMOJI_CAPTCHA_INI_PATH=<path/to/plugin/config.ini>
+
+  Note that the plugin can be parameterized via the following methods:
+
+    - Pass the `--plugin_emoji_captcha_ini_path` flag to the python invocation
     - Set the PLUGIN_EMOJI_CAPTCHA_INI_PATH environment variable
-    - Otherwise expects "emoji_captcha.ini" in the current working directory
+    - Otherwise expects "emoji_captcha.ini" in the current working directory if omitted
+
+  Start the plugin via UWSGI or directly and after it has initialised the plugin will generate a
+  Ed25519 keypair and output this information on startup, e.g.:
+
+    [EMOJI CAPTCHA] Plugin initialised:
+      SOGS Address (Pubkey):      tcp://127.0.0.1:22028 (cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc)
+      Display Name:               Emoji CAPTCHA Plugin
+      Ed25519 Pubkey:             aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      X25519 Pubkey:              bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      Session Account (Blind-15): 15xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+      Refresh/Retry/Write:        60s/60s/120s
+      CAPTCHA Retries:            3
+
+  The Ed25519 public key must be registered to the SOGS instance to enable the plugin to establish
+  a connection to the SOGS server, authenticate and consequently receive messages from SOGS to react
+  to. The plugin can be registered by invoking on the SOGS instance:
+
+    python3 -m sogs --add-plugin       <ed25519 pubkey hex 64 chars> \
+                    --plugin-name      'Emoji CAPTCHA Plugin' \
+                    --plugin-global    true \
+                    --plugin-approver  true \
+                    --plugin-subscribe true
 
 Architecture:
   - Runs in a separate Python process and communicates with SOGS via OxenMQ.
@@ -933,3 +969,6 @@ def entry_point(ini_file: str = 'emoji_captcha.ini'):
         plugin.run()
     except Exception as e:
         sogs.plugin.log.error(f"Exception raised in plugin. Terminating:\n{e}")
+
+if __name__ == "__main__":
+    entry_point()
