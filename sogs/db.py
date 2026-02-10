@@ -1,15 +1,19 @@
 from . import config
 from . import crypto
 from .postfork import postfork
+
 import os
 import logging
 import importlib.resources
 import sqlalchemy.engine.base
 import sqlalchemy.engine
+import typing
+import sys
+
 from sys import version_info as python_version
 from sqlalchemy.sql.expression import bindparam
 from werkzeug.local import LocalProxy
-from typing import Optional
+from typing import Optional, List, Tuple
 
 HAVE_FILE_ID_HACKS = False
 # roomid => (max, offset).  Max is the highest message id that was in the old table; offset is the
@@ -214,56 +218,68 @@ def _fix_plugin_keys(dbconn):
     """Verify and fix plugin x25519 keys derived from ed25519 keys."""
     import nacl.bindings as sodium
     from .db import query
-    print("Verifying and fixing plugin keys...\n")
+    print("Verifying plugin keys...")
     plugins = query("SELECT id, name, ed_key, x_key FROM plugins", dbconn=dbconn).all()
     if not plugins:
         return
 
     # Header
-    print(f"{'ID':<5} {'Name':<20} {'Status':<10}")
+    print(f"{'ID':<5} {'Name':<32} {'Status':<10}")
     print("-" * 80)
+    fixed_count                              = 0
+    ok_count                                 = 0
+    invalid_plugins: List[Tuple[str, bytes]] = []
 
-    fixed_count = 0
-    ok_count = 0
+    for index, plugin in enumerate(plugins):
+        plugin_id    = typing.cast(int, plugin['id'])
+        name         = typing.cast(str, plugin['name']) or f"Plugin {plugin_id}"
+        ed_key       = typing.cast(bytes, plugin['ed_key'])
+        stored_x_key = typing.cast(bytes, plugin['x_key'])
+        if index:
+            print()
 
-    for plugin in plugins:
-        plugin_id = plugin['id']
-        name = plugin['name'] or f"Plugin {plugin_id}"
-        ed_key = plugin['ed_key']
-        stored_x_key = plugin['x_key']
+        derived_x_key: bytes = b''
+        try:
+            derived_x_key = sodium.crypto_sign_ed25519_pk_to_curve25519(ed_key)
+        except Exception as e:
+            pass
 
-        if ed_key is None or stored_x_key is None:
-            print(f"{plugin_id:<5} {name:<20} {'SKIPPED':<10} (missing keys)")
-            continue
-
-        derived_x_key = sodium.crypto_sign_ed25519_pk_to_curve25519(ed_key)
-
-        # Format keys in 4-byte chunks for display
-        ed_chunks = [ed_key[i:i+4].hex() for i in range(0, 32, 4)]
-        stored_chunks = [stored_x_key[i:i+4].hex() for i in range(0, 32, 4)]
-        derived_chunks = [derived_x_key[i:i+4].hex() for i in range(0, 32, 4)]
-
-        if stored_x_key != derived_x_key:
-            print(f"{plugin_id:<5} {name:<20} {'MISMATCH':<10}")
-            print(f"      ed25519 (stored):    {' '.join(ed_chunks)}")
-            print(f"      x25519 (stored):     {' '.join(stored_chunks)}")
-            print(f"      x25519 (derived):    {' '.join(derived_chunks)}")
-
-            # Fix the key
-            with db.transaction():
-                query("UPDATE plugins SET x_key = :x_key WHERE id = :id",
-                      x_key=derived_x_key, id=plugin_id)
-            print(f"      -> FIXED: Updated x_key to derived value")
-            fixed_count += 1
+        ed_chunks: List[str] = [ed_key[i:i+4].hex() for i in range(0, 32, 4)]
+        if len(derived_x_key) == 0:
+            print(f"{plugin_id:<5} {name:<32} {'⛔ INVALID':<10}")
+            print(f"        Ed25519: {' '.join(ed_chunks)} (Ed25519 key is not valid)")
+            invalid_plugins.append((name, ed_key))
         else:
-            print(f"{plugin_id:<5} {name:<20} {'OK':<10}")
-            print(f"      ed25519: {' '.join(ed_chunks)}")
-            print(f"      x25519:  {' '.join(stored_chunks)}")
-            ok_count += 1
-        print()
+            # Format keys in 4-byte chunks for display
+            stored_chunks:  List[str] = [stored_x_key[i:i+4].hex() for i in range(0, 32, 4)]
+            derived_chunks: List[str] = [derived_x_key[i:i+4].hex() for i in range(0, 32, 4)]
+
+            if stored_x_key == derived_x_key:
+                print(f"{plugin_id:<5} {name:<32} {'✅ OK':<10}")
+                print(f"        Ed25519: {' '.join(ed_chunks)}")
+                print(f"        X25519:  {' '.join(stored_chunks)}")
+                ok_count += 1
+            else:
+                print(f"{plugin_id:<5} {name:<32} {'⚠️ MISMATCH':<10}")
+                print(f"        Ed25519 (stored):    {' '.join(ed_chunks)}")
+                print(f"        X25519  (stored):    {' '.join(stored_chunks)}")
+                print(f"        X25519 (derived):    {' '.join(derived_chunks)}")
+
+                # Fix the key
+                with transaction(dbconn):
+                    query("UPDATE plugins SET x_key = :x_key WHERE id = :id", dbconn=dbconn, x_key=derived_x_key, id=plugin_id)
+                print(f"        FIXED: Updated x_key to derived value")
+                fixed_count += 1
 
     print("-" * 80)
-    print(f"Summary: {fixed_count} plugin(s) fixed, {ok_count} plugin(s) OK")
+    print(f"Summary: {fixed_count} plugin(s) fixed, {ok_count} plugin(s) OK, {len(invalid_plugins)} plugin(s) invalid")
+
+    if len(invalid_plugins):
+        print(("\nThe following plugin(s) have invalid Ed25519 public keys registered. These plugins need to\n"
+               "regenerate their keys and re-register to the SOGS server\n"))
+        for it in invalid_plugins:
+            print(f"  Plugin '{it[0]}': python3 -m sogs --delete-plugin {it[1].hex()}")
+        sys.exit(1)
 
 def init_engine(*args, **kwargs):
     """

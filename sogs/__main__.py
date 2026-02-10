@@ -3,7 +3,7 @@ import atexit
 import re
 import sys
 import typing
-from typing import List, Tuple, Union
+from typing import List, Tuple
 
 from . import __version__ as version
 
@@ -166,7 +166,7 @@ _ = ap.add_argument('--add-room-plugin',
                     help=("Add a plugin to specific room(s). Accepts plugin ID (numeric) or Ed25519 "
                           "public key (64 hex chars). Requires --rooms, --room-plugin-approver, "
                           "--room-plugin-required, and --room-plugin-subscribe."),
-                    metavar='PLUGIN_ID_OR_KEY')
+                    metavar='PLUGIN_ID_OR_ED_KEY')
 _ = ap.add_argument('--room-plugin-approver',
                     type=str,
                     choices=['true', 'false'],
@@ -356,7 +356,7 @@ if update_room and not args.rooms:
         file=sys.stderr,
     )
     sys.exit(1)
-if args.rooms and not update_room:
+if args.rooms and not update_room and not args.delete_room_plugin and not args.add_room_plugin:
     # If we have --rooms but didn't recognize any of the `update_rooms` options then that means
     # `--rooms` was specify with some action (e.g. `--initialize`) that doesn't support --rooms:
     print("Error: --rooms specified without a room modification option", file=sys.stderr)
@@ -762,15 +762,15 @@ elif args.list_plugins:
         print("No plugins registered.")
     else:
         for index, plugin in enumerate(plugins):
-            plugin_id      = plugin['id']
-            name           = plugin['name']
+            plugin_id      = typing.cast(int, plugin['id'])
+            name           = typing.cast(str, plugin['name'])
             global_flag    = bool(plugin['global'])
             approver_flag  = bool(plugin['approver'])
             subscribe_flag = bool(plugin['subscribe'])
 
             # Get keys from database
-            ed25519_key = plugin['ed_key']
-            x25519_key = plugin['x_key']
+            ed25519_key = typing.cast(bytes, plugin['ed_key'])
+            x25519_key  = typing.cast(bytes, plugin['x_key'])
 
             def _verify_plugin_keys(ed_key: bytes, x_key: bytes) -> bool:
                 import nacl.bindings as sodium
@@ -778,36 +778,37 @@ elif args.list_plugins:
                 return expected_x_key == x_key
 
             # Verify keys match
-            if not _verify_plugin_keys(ed25519_key, x25519_key):
-                print(f"  WARNING: Stored x25519 key does not match derived key from ed25519 key!")
+            invalid_key_warning = ""
+            try:
+                if not _verify_plugin_keys(ed25519_key, x25519_key):
+                    invalid_key_warning = " (⛔ X25519 key does not match the derived x-key from ed25519, restart the server to auto-repair the key)"
+            except Exception as e:
+                invalid_key_warning = " (⛔ Ed25519 pubkey was not a valid key)"
 
             print(f"[{index:02d}] '{name}' (Plugin ID={plugin_id})")
-            print(f"  Ed25519 Pubkey:            {ed25519_key.hex()}")
+            print(f"  Ed25519 Pubkey:            {ed25519_key.hex()}{invalid_key_warning}")
             print(f"  X25519 Pubkey:             {x25519_key.hex()}")
             print(f"  Global/Approver/Subscribe: {global_flag}/{approver_flag}/{subscribe_flag}")
 
             # Get room_plugins for this plugin
-            room_plugins = query(
-                "SELECT rp.room, r.token, rp.approver, rp.required, rp.subscribe "
-                "FROM room_plugins rp JOIN rooms r ON rp.room = r.id "
-                "WHERE rp.plugin = :plugin_id ORDER BY r.token",
-                plugin_id=plugin_id
-            ).all()
+            room_plugins = query(("SELECT rp.room, r.token, r.name, rp.approver, rp.required, rp.subscribe "
+                                  "FROM room_plugins rp JOIN rooms r ON rp.room = r.id "
+                                  "WHERE rp.plugin = :plugin_id ORDER BY r.token"),
+                                 plugin_id=plugin_id).all()
 
             if room_plugins:
                 print(f"  Rooms ({len(room_plugins)})")
-                for rp in room_plugins:
-                    room_id = rp['room']
-                    room_token = rp['token']
-                    rp_approver = bool(rp['approver'])
-                    rp_required = bool(rp['required'])
-                    rp_subscribe = bool(rp['subscribe'])
+                for index, row in enumerate(room_plugins):
+                    room_name    = typing.cast(str, row['name'])
+                    room_id      = typing.cast(int, row['room'])
+                    room_token   = typing.cast(bytes, row['token'])
+                    rp_approver  = bool(typing.cast(int, row['approver']))
+                    rp_required  = bool(typing.cast(int, row['required']))
+                    rp_subscribe = bool(typing.cast(int, row['subscribe']))
 
-                    print(f"    [{room_id:02d}] {room_token}")
-                    print(f"      Room ID:   {room_id}")
-                    print(f"      Approver:  {rp_approver}")
-                    print(f"      Required:  {rp_required}")
-                    print(f"      Subscribe: {rp_subscribe}")
+                    print(f"    [{index:02d}] '{room_name}' (Room ID={room_id})")
+                    print(f"      Room Token:                  {room_token}")
+                    print(f"      Approver/Required/Subscribe: {rp_approver}/{rp_required}/{rp_subscribe}")
             else:
                 print("  Rooms (0)")
 
@@ -871,10 +872,10 @@ elif typing.cast(bool, args.add_plugin):
             old_subscribe: bool = bool(existing['subscribe'])
 
             # Build list of all fields with change status
-            fields.append(("Name",      f"'{old_name}' "      + f"-> '{plugin_name}'" if old_name      != plugin_name  else "(unchanged)"))
-            fields.append(("Global",    f"'{old_global}' "    + f"->  {is_global}"    if old_global    != is_global    else "(unchanged)"))
-            fields.append(("Approver",  f"'{old_approver}' "  + f"->  {is_approver}"  if old_approver  != is_approver  else "(unchanged)"))
-            fields.append(("Subscribe", f"'{old_subscribe}' " + f"->  {is_subscribe}" if old_subscribe != is_subscribe else "(unchanged)"))
+            fields.append(("Name",      f"'{old_name}' "    + (f"-> '{plugin_name}'" if old_name     != plugin_name  else "(unchanged)")))
+            fields.append(("Global",    f"{old_global} "    + (f"-> {is_global}"    if old_global    != is_global    else "(unchanged)")))
+            fields.append(("Approver",  f"{old_approver} "  + (f"-> {is_approver}"  if old_approver  != is_approver  else "(unchanged)")))
+            fields.append(("Subscribe", f"{old_subscribe} " + (f"-> {is_subscribe}" if old_subscribe != is_subscribe else "(unchanged)")))
 
             has_changes = (old_name != plugin_name or old_global != is_global or old_approver != is_approver or old_subscribe != is_subscribe)
             if has_changes:
@@ -888,7 +889,7 @@ elif typing.cast(bool, args.add_plugin):
                       id           = plugin_id,)
 
         from sogs.utils import pretty_format_key_value_list
-        print(f"Plugin '{plugin_name}' (id={plugin_id}):" + "\n  ".join(pretty_format_key_value_list(fields)))
+        print(f"Plugin '{plugin_name}' (id={plugin_id}):\n  " + "\n  ".join(pretty_format_key_value_list(fields)))
 
 elif typing.cast(bool, args.add_room_plugin):
     # Resolve plugin identifier
@@ -943,9 +944,9 @@ elif typing.cast(bool, args.add_room_plugin):
                             plugin_id=plugin_id,
                             room_id=room.id
                         )
-                    fields.append(("Required",  f"'{old_required}' "  + f"->  {room_plugin_required}"  if old_required  != room_plugin_required  else "(unchanged)"))
-                    fields.append(("Approver",  f"'{old_approver}' "  + f"->  {room_plugin_approver}"  if old_approver  != room_plugin_approver  else "(unchanged)"))
-                    fields.append(("Subscribe", f"'{old_subscribe}' " + f"->  {room_plugin_subscribe}" if old_subscribe != room_plugin_subscribe else "(unchanged)"))
+                    fields.append(("Required",  f"{old_required} "  + (f"->  {room_plugin_required}"  if old_required  != room_plugin_required  else "(unchanged)")))
+                    fields.append(("Approver",  f"{old_approver} "  + (f"->  {room_plugin_approver}"  if old_approver  != room_plugin_approver  else "(unchanged)")))
+                    fields.append(("Subscribe", f"{old_subscribe} " + (f"->  {room_plugin_subscribe}" if old_subscribe != room_plugin_subscribe else "(unchanged)")))
                 else:
                     query(
                         "INSERT INTO room_plugins (plugin, room, approver, required, subscribe) "
@@ -962,7 +963,7 @@ elif typing.cast(bool, args.add_room_plugin):
                     fields.append(("Subscribe", f"{room_plugin_subscribe}"))
 
                 from sogs.utils import pretty_format_key_value_list
-                print(f"Room plugin '{plugin_name}' (id={plugin_id}):" + "\n  ".join(pretty_format_key_value_list(fields)))
+                print(f"Room plugin '{plugin_name}' (id={plugin_id}):\n  " + "\n  ".join(pretty_format_key_value_list(fields)))
 
         except NoSuchRoom:
             print(f"Error: Room '{room_token}' not found", file=sys.stderr)
@@ -990,7 +991,7 @@ elif typing.cast(bool, args.delete_room_plugin):
                 if result.rowcount > 0:
                     print(f"Removed '{plugin_name}' from room '{room_token}'")
                 else:
-                    print(f"'{plugin_name}' was not configured for room '{room_token}'")
+                    print(f"'{plugin_name}' plugin was not configured for room '{room_token}'")
         except NoSuchRoom:
             print(f"Error: Room '{room_token}' not found", file=sys.stderr)
 
