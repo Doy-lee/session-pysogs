@@ -97,5 +97,5 @@ def entry_point(ini_path: str = 'slash_test.ini'):
         # Instantiate the plugin
         plugin = SlashTestPlugin(sogs_address=config.sogs_address, sogs_pubkey=config.sogs_pubkey, ed_privkey=ed_privkey, display_name=display_name)
         plugin.run()
-    except Exception:
-        log.error("Exception raised in plugin. Terminating:\n{}".format(traceback.format_exc()))
+    except Exception as e:
+        sogs.plugin.log.error(f"Exception raised in plugin. Terminating:\n{e}")

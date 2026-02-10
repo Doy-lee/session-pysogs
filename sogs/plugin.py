@@ -303,7 +303,23 @@ class Plugin:
 
     def run(self):
         self.omq.start()
-        self.conn = self.omq.connect_remote(oxenmq.Address(self.sogs_address, self.sogs_pubkey))
+        try:
+            self.conn = self.omq.connect_remote(oxenmq.Address(self.sogs_address, self.sogs_pubkey))
+        except Exception as e:
+            raise RuntimeError((f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
+                                f" ⛔ {e} ⛔\n\n"
+                                f""
+                                f""
+                                f"Check that the SOGS server is contactable at {self.sogs_address} and that the plugin has been registered\n"
+                                f"(authorised) to communicate with the SOGS server. You can register this plugin globally across all-rooms\n"
+                                f"if it hasn't been registered by running this command on your SOGS instance\n\n"
+                                f""
+                                f""
+                                f"  python3 -msogs --add-plugin {self.ed_pubkey.hex()} --plugin-name '{self.display_name}' --plugin-global true --plugin-approver true --plugin-subscribe true\n\n"
+                                f""
+                                f""
+                                f"See python3 -msogs --help for more information on this invocation.\n"
+                                f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"))
 
         self.say_hello()
 

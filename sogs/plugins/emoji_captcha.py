@@ -931,5 +931,5 @@ def entry_point(ini_file: str = 'emoji_captcha.ini'):
             plugin.emoji_list = emoji_list
 
         plugin.run()
-    except Exception:
-        sogs.plugin.log.error("Exception raised in plugin. Terminating:\n{}".format(traceback.format_exc()))
+    except Exception as e:
+        sogs.plugin.log.error(f"Exception raised in plugin. Terminating:\n{e}")
