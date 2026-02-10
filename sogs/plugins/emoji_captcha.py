@@ -930,23 +930,6 @@ def entry_point(ini_file: str = 'emoji_captcha.ini'):
         if len(emoji_list_file):
             plugin.emoji_list = emoji_list
 
-        # Register the plugin to the DB. SOGS uses this DB to authenticate incoming requests as long
-        # as they are signed by the x25519 key stored here. This table also contains permissions for
-        # the SOGS to further discriminate the types of requests the plugin is allowed to make.
-        #
-        # This step is optional! If you wanted to run plugins on a separate network and to remotely
-        # communicate with SOGS then you could imagine manually authorising the plugin by inserting
-        # the key into the DB out-of-band.
-        #
-        # In this example we are running the CAPTCHA plugin on a DB that is local to the application
-        # and is trusted so we authorise ourselves directly into the plugins table thus making this
-        # plugin completely standalone.
-        _ = sogs.plugin.Plugin.register_plugin_to_db(db_path      = 'sogs.db',
-                                                     x_pubkey     = plugin.x_pubkey,
-                                                     name         = 'Emoji CAPTCHA',
-                                                     is_global    = True,
-                                                     is_approver  = True,
-                                                     is_subscribe = True)
         plugin.run()
     except Exception:
         sogs.plugin.log.error("Exception raised in plugin. Terminating:\n{}".format(traceback.format_exc()))

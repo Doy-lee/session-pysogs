@@ -6,7 +6,6 @@ import logging
 import importlib.resources
 import sqlalchemy.engine.base
 import sqlalchemy.engine
-import sqlalchemy.engine
 from sys import version_info as python_version
 from sqlalchemy.sql.expression import bindparam
 from werkzeug.local import LocalProxy
@@ -208,8 +207,63 @@ def create_admin_user(dbconn):
     )
 
 
-engine, engine_initial_pid, metadata = None, None, None
+engine: Optional[sqlalchemy.engine.base.Engine] = None
+engine_initial_pid, metadata = None, None
 
+def _fix_plugin_keys(dbconn):
+    """Verify and fix plugin x25519 keys derived from ed25519 keys."""
+    import nacl.bindings as sodium
+    from .db import query
+    print("Verifying and fixing plugin keys...\n")
+    plugins = query("SELECT id, name, ed_key, x_key FROM plugins", dbconn=dbconn).all()
+    if not plugins:
+        return
+
+    # Header
+    print(f"{'ID':<5} {'Name':<20} {'Status':<10}")
+    print("-" * 80)
+
+    fixed_count = 0
+    ok_count = 0
+
+    for plugin in plugins:
+        plugin_id = plugin['id']
+        name = plugin['name'] or f"Plugin {plugin_id}"
+        ed_key = plugin['ed_key']
+        stored_x_key = plugin['x_key']
+
+        if ed_key is None or stored_x_key is None:
+            print(f"{plugin_id:<5} {name:<20} {'SKIPPED':<10} (missing keys)")
+            continue
+
+        derived_x_key = sodium.crypto_sign_ed25519_pk_to_curve25519(ed_key)
+
+        # Format keys in 4-byte chunks for display
+        ed_chunks = [ed_key[i:i+4].hex() for i in range(0, 32, 4)]
+        stored_chunks = [stored_x_key[i:i+4].hex() for i in range(0, 32, 4)]
+        derived_chunks = [derived_x_key[i:i+4].hex() for i in range(0, 32, 4)]
+
+        if stored_x_key != derived_x_key:
+            print(f"{plugin_id:<5} {name:<20} {'MISMATCH':<10}")
+            print(f"      ed25519 (stored):    {' '.join(ed_chunks)}")
+            print(f"      x25519 (stored):     {' '.join(stored_chunks)}")
+            print(f"      x25519 (derived):    {' '.join(derived_chunks)}")
+
+            # Fix the key
+            with db.transaction():
+                query("UPDATE plugins SET x_key = :x_key WHERE id = :id",
+                      x_key=derived_x_key, id=plugin_id)
+            print(f"      -> FIXED: Updated x_key to derived value")
+            fixed_count += 1
+        else:
+            print(f"{plugin_id:<5} {name:<20} {'OK':<10}")
+            print(f"      ed25519: {' '.join(ed_chunks)}")
+            print(f"      x25519:  {' '.join(stored_chunks)}")
+            ok_count += 1
+        print()
+
+    print("-" * 80)
+    print(f"Summary: {fixed_count} plugin(s) fixed, {ok_count} plugin(s) OK")
 
 def init_engine(*args, **kwargs):
     """
@@ -248,6 +302,8 @@ def init_engine(*args, **kwargs):
         exec_opts_args['autocommit'] = False
 
     engine = sqlalchemy.create_engine(*args, **kwargs).execution_options(**exec_opts_args)
+    assert engine
+
     engine_initial_pid = os.getpid()
     metadata = sqlalchemy.MetaData()
 
@@ -294,6 +350,7 @@ def init_engine(*args, **kwargs):
 
     if not skip_init:
         database_init()
+        _fix_plugin_keys(engine.connect())
 
 
 if config.RUNNING_AS_APP:

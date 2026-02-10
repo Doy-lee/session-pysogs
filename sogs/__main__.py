@@ -218,6 +218,7 @@ _ = ap.add_argument("--list-rooms", "-L", action='store_true', help="List curren
 _ = ap.add_argument('--list-global-mods', '-M', action='store_true', help="List global moderators/admins")
 _ = ap.add_argument("--list-plugins", "-P", action='store_true', help="List all registered plugins and their room configurations")
 
+
 ap.add_argument(
     "--verbose",
     "-v",
@@ -272,13 +273,6 @@ def _resolve_plugin_id(plugin_id_or_key: str) -> int:
         raise ValueError(
             f"No plugin found with Ed25519 public key '{plugin_id_or_key}'")
     return plugin['id']
-
-
-def _verify_plugin_keys(ed_key: bytes, x_key: bytes) -> bool:
-    import nacl.bindings as sodium
-    expected_x_key = sodium.crypto_sign_ed25519_pk_to_curve25519(ed_key)
-    return expected_x_key == x_key
-
 
 args = ap.parse_args()
 
@@ -353,8 +347,7 @@ if args.delete_room_plugin:
         print("Error: --delete-room-plugin requires --rooms", file=sys.stderr)
         sys.exit(1)
     if '+' in args.rooms or '*' in args.rooms:
-        print("Error: --delete-room-plugin requires specific room tokens, not '+' or '*'",
-              file=sys.stderr)
+        print("Error: --delete-room-plugin requires specific room tokens, not '+' or '*'", file=sys.stderr)
         sys.exit(1)
 
 if update_room and not args.rooms:
@@ -778,6 +771,11 @@ elif args.list_plugins:
             # Get keys from database
             ed25519_key = plugin['ed_key']
             x25519_key = plugin['x_key']
+
+            def _verify_plugin_keys(ed_key: bytes, x_key: bytes) -> bool:
+                import nacl.bindings as sodium
+                expected_x_key = sodium.crypto_sign_ed25519_pk_to_curve25519(ed_key)
+                return expected_x_key == x_key
 
             # Verify keys match
             if not _verify_plugin_keys(ed25519_key, x25519_key):

@@ -96,12 +96,6 @@ def entry_point(ini_path: str = 'slash_test.ini'):
     try:
         # Instantiate the plugin
         plugin = SlashTestPlugin(sogs_address=config.sogs_address, sogs_pubkey=config.sogs_pubkey, ed_privkey=ed_privkey, display_name=display_name)
-        _ = Plugin.register_plugin_to_db(db_path      = 'sogs.db',
-                                         x_pubkey     = plugin.x_pubkey,
-                                         name         = 'Slash Test',
-                                         is_global    = True,
-                                         is_approver  = True,
-                                         is_subscribe = True)
         plugin.run()
     except Exception:
         log.error("Exception raised in plugin. Terminating:\n{}".format(traceback.format_exc()))
