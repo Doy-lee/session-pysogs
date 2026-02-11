@@ -154,12 +154,14 @@ class Plugin:
     sogs_pubkey:          bytes
 
     # Default values
-    running:              bool                                                                 = False
-    last_post_time:       int                                                                  = 0
-    pre_slash_handlers:   Dict[str, typing.Callable[[Dict[bytes, bt_value], List[str]], bool]] = dataclasses.field(default_factory=dict)
-    post_slash_handlers:  Dict[str, typing.Callable[[Dict[bytes, bt_value], List[str]], bool]] = dataclasses.field(default_factory=dict)
-    request_read_handler: Optional[typing.Callable[[RoomReadRequest], bt_value]]               = None
-    conn:                 Optional[oxenmq.ConnectionID]                                        = None
+    running:                    bool                                                                 = False
+    last_post_time:             int                                                                  = 0
+    pre_slash_handlers:         Dict[str, typing.Callable[[Dict[bytes, bt_value], List[str]], bool]] = dataclasses.field(default_factory=dict)
+    post_slash_handlers:        Dict[str, typing.Callable[[Dict[bytes, bt_value], List[str]], bool]] = dataclasses.field(default_factory=dict)
+    request_read_handler:       Optional[typing.Callable[[RoomReadRequest], bt_value]]               = None
+    on_reaction_posted_handler: Optional[typing.Callable[[oxenmq.Message, ReactionPosted], None]]    = None
+    on_message_posted_handler:  Optional[typing.Callable[[oxenmq.Message, RoomReadRequest], None]]   = None
+    conn:                       Optional[oxenmq.ConnectionID]                                        = None
 
     # Post initialised
     ed_pubkey:            bytes               = dataclasses.field(init=False) # 32 byte ed25519 public key
@@ -257,8 +259,8 @@ class Plugin:
         self.omq = oxenmq.OxenMQ(privkey=self.x_privkey, pubkey=self.x_pubkey, log_level=oxenmq.LogLevel.debug)
         cat      = self.omq.add_category("plugin", access_level=oxenmq.AuthLevel.none)
         cat.add_request_command("filter_message",       self.filter_message)
-        cat.add_command        ("message_posted",       self.message_posted)
-        cat.add_command        ("on_reaction_posted",   self.on_reaction_posted)
+        cat.add_command        ("message_posted",       self._on_message_posted)
+        cat.add_command        ("on_reaction_posted",   self._on_reaction_posted)
         cat.add_request_command("pre_message_command",  self.pre_message_command)
         cat.add_request_command("post_message_command", self.post_message_command)
         cat.add_request_command("request_read",         self.request_read)
@@ -350,6 +352,9 @@ class Plugin:
         if self.running:
             conn: oxenmq.ConnectionID = self._require_conn_established()
             self.omq.send(conn, f"plugin.register_pre_commands", oxenc.bt_serialize({b"commands": ["request_read"]}))
+
+    def register_on_reaction_posted_handler(self, handler: Callable[[oxenmq.Message, ReactionPosted], None]):
+        self.on_reaction_posted_handler = handler
 
     def handle_message_command(self, m: oxenmq.Message, pre_command: bool) -> bytes:
         req = oxenc.bt_deserialize(m.dataview()[0])
@@ -715,11 +720,13 @@ class Plugin:
             print(f"upload_file exception: {e}")
             return None
 
-    def message_posted(self, m: oxenmq.Message):  # pyright: ignore[reportUnusedParameter]
+    def _on_message_posted(self, m: oxenmq.Message):  # pyright: ignore[reportUnusedParameter]
         """Handle message posted events from SOGS, override this in your plugin to customise the behaviour"""
         pass
 
-    def on_reaction_posted(self, m: oxenmq.Message):  # pyright: ignore[reportUnusedParameter]
-        """Handle reaction posted events from SOGS, override this in your plugin to customise the behaviour"""
-        _ = ReactionPosted.from_bencode(m.dataview()[0]) # Parse payload and use as needed
+    def _on_reaction_posted(self, m: oxenmq.Message):
+        """Handle reaction posted events from SOGS, register a handler to receive these events"""
+        if self.on_reaction_posted_handler:
+            parse = ReactionPosted.from_bencode(m.dataview()[0])
+            self.on_reaction_posted_handler(m, parse)
 

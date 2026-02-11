@@ -649,6 +649,7 @@ class EmojiCaptchaPlugin(sogs.plugin.Plugin):
         # community. In this hook we check if the user has solved a captcha before and lets the user
         # read or otherwise require them to solve captcha to proceed.
         self.register_request_read_handler(self.handle_request_read)
+        self.register_on_reaction_posted_handler(self.on_reaction_posted)
 
         # NOTE: Print some startup diagnostics
         desc_lines: List[Tuple[str, str]] = self.describe_config()
@@ -875,10 +876,8 @@ class EmojiCaptchaPlugin(sogs.plugin.Plugin):
 
         return oxenc.bt_serialize("OK")
 
-    @typing_extensions.override
-    def on_reaction_posted(self, m: oxenmq.Message):
+    def on_reaction_posted(self, m: oxenmq.Message, req: sogs.types.ReactionPosted):  # pyright: ignore[reportUnusedParameter]
         """Process reactions on CAPTCHA messages (answer, refresh, or incorrect)."""
-        req = sogs.types.ReactionPosted.from_bencode(m.dataview()[0])
         user: Optional[UserCaptchaState] = self.get_user(req.session_id, req.room_token)
         if not user:
             sogs.plugin.log.warning(f'Reaction {req.reaction} from unknown user 0x{req.session_id.hex()} in room {req.room_token}')
@@ -901,7 +900,6 @@ class EmojiCaptchaPlugin(sogs.plugin.Plugin):
 
 def entry_point(ini_file: str = 'emoji_captcha.ini'):
     import argparse
-    import traceback
 
     # Argument parser
     parser = argparse.ArgumentParser(description='Emoji CAPTCHA Plugin for SOGS')

@@ -236,7 +236,7 @@ def plugin_on_room_add_post_request(m: oxenmq.Message) -> Optional[bytes]:
 
         # Run post-message hooks that can react to the _act_ of a message being posted into the room
         plugin_post_message_commands(raw_payload, command)
-        _on_message_posted(msg_id)
+        relay_on_message_posted(msg_id)
     except Exception as e:
         app.logger.warning(f"Exception handling new/edited message from sogs: {e}")
         if not responded:
@@ -274,12 +274,6 @@ def request_read(m: oxenmq.Message):
     return retval
 
 
-# TODO: this should be usable for reaction added/removed, not just added
-@log_exceptions
-def plugin_on_reaction_posted(m: oxenmq.Message):
-    on_reaction_posted(m)
-
-
 @log_exceptions
 def messages_deleted(m: oxenmq.Message):
     ids = bt_deserialize(m.data()[0])
@@ -289,10 +283,6 @@ def messages_deleted(m: oxenmq.Message):
 @log_exceptions
 def message_edited(m: oxenmq.Message):
     app.logger.debug("FIXME: mule -- message edited stub")
-
-
-# Commands *to* pPlugins
-
 
 @log_exceptions
 def plugin_filter_message(req: sogs.types.RoomAddPostRequest) -> sogs.plugin.FilterResponse:
@@ -426,7 +416,7 @@ def setup_omq():
     worker.add_request_command("request_read", request_read)
     worker.add_command("messages_deleted", messages_deleted)
     worker.add_command("message_edited", message_edited)
-    worker.add_command("on_reaction_posted", plugin_on_reaction_posted)
+    worker.add_command("on_reaction_posted", relay_on_reaction_posted)
 
     app.logger.debug("Mule starting omq")
     omq.start()
@@ -693,7 +683,7 @@ def plugin_insert_message(m: oxenmq.Message) -> bytes:
         if len(req.attachment_ids):
             room.own_files(msg_id, req.attachment_ids, sender)
         if req.relay_to_plugins:
-            _on_message_posted(msg_id)
+            relay_on_message_posted(msg_id)
 
     return bt_serialize({b'msg_id': msg_id})
 
@@ -718,45 +708,6 @@ def plugin_upload_file(m: oxenmq.Message):
 
         url = f"{config.URL_BASE}/{room.token}/file/{file_id}"
         return bt_serialize({b'file_id': file_id, b"url": url})
-
-@needs_app_context
-@log_exceptions
-def _on_message_posted(msg_id: MessageID):
-    app.logger.warning(f"Calling on_message_posted with id={msg_id}")
-
-    # Fetch the message by message ID
-    msg: Optional[Dict[bytes, bt_value]] = None
-    for row in query(
-        f"""
-        SELECT message_details.*, uroom.token AS room_token FROM message_details
-        JOIN rooms uroom ON message_details.room = uroom.id
-        WHERE message_details.id = :msg_id
-        """,
-        msg_id=msg_id,
-    ):
-        app.logger.debug("Message details:")
-        msg = {}
-        for key in row.keys():
-            app.logger.debug(f"{key}: {row[key]}")
-            key_bytes: bytes = typing.cast(str, key).encode()
-            if row[key]:
-                msg[key_bytes] = row[key]
-            else:
-                msg[key_bytes] = ""
-
-    if msg is None:
-        return
-
-    # Serialize and send
-    plugin_ids: Dict[PluginID, PluginInfo] = get_relevant_plugins("subscribe = 1", room_id=typing.cast(int, msg[b'room']))
-    if len(plugin_ids) == 0:
-        msg[b'posted']    = str(msg[b'posted'])
-        serialized: bytes = bt_serialize(msg)
-
-        # Relay message to plugin's post message hooks
-        for plugin_id in plugin_ids.keys():
-            o.omq.send(plugin_conns[plugin_id], "plugin.message_posted", serialized)
-
 
 @needs_app_context
 @log_exceptions
@@ -826,10 +777,17 @@ def plugin_remove_reactions(m: oxenmq.Message):
     return bt_serialize({b'status': 'OK'})
 
 
+# NOTE: this should be a list of IDs; if the plugin cares, it will have stored them.
+#       or can fetch them
+@needs_app_context
+@log_exceptions
+def on_messages_deleted(m: oxenmq.Message):
+    pass
+
 # TODO: this should be usable for reaction added/removed, not just added
 @needs_app_context
 @log_exceptions
-def on_reaction_posted(m: oxenmq.Message):
+def relay_on_reaction_posted(m: oxenmq.Message):
     req_raw: List[bytes] = m.data()
     req                  = sogs.types.ReactionPosted.from_bencode(req_raw[0])
     app.logger.debug(f"Reaction posted: {req}")
@@ -841,9 +799,39 @@ def on_reaction_posted(m: oxenmq.Message):
             app.logger.debug(f"Sending reaction to plugin '{plugin_info.name}' (id={id}, required={plugin_info.required})")
             o.omq.send(plugin_conns[id], "plugin.on_reaction_posted", *req_raw)
 
-# NOTE: this should be a list of IDs; if the plugin cares, it will have stored them.
-#       or can fetch them
+
 @needs_app_context
 @log_exceptions
-def on_messages_deleted(m: oxenmq.Message):
-    pass
+def relay_on_message_posted(msg_id: MessageID):
+    # Fetch the message by message ID
+    msg: Optional[Dict[bytes, bt_value]] = None
+    for row in query(
+        f"""
+        SELECT message_details.*, uroom.token AS room_token FROM message_details
+        JOIN rooms uroom ON message_details.room = uroom.id
+        WHERE message_details.id = :msg_id
+        """,
+        msg_id=msg_id,
+    ):
+        app.logger.debug("Message details:")
+        msg = {}
+        for key in row.keys():
+            app.logger.debug(f"{key}: {row[key]}")
+            key_bytes: bytes = typing.cast(str, key).encode()
+            if row[key]:
+                msg[key_bytes] = row[key]
+            else:
+                msg[key_bytes] = ""
+
+    if msg is None:
+        return
+
+    # Serialize and send
+    plugin_ids: Dict[PluginID, PluginInfo] = get_relevant_plugins("subscribe = 1", room_id=typing.cast(int, msg[b'room']))
+    if len(plugin_ids) == 0:
+        msg[b'posted']    = str(msg[b'posted'])
+        serialized: bytes = bt_serialize(msg)
+
+        # Relay message to plugin's post message hooks
+        for plugin_id in plugin_ids.keys():
+            o.omq.send(plugin_conns[plugin_id], "plugin.message_posted", serialized)
