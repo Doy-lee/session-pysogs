@@ -256,7 +256,7 @@ class MessagePosted:
             room            = typing.cast(int, src[b'room']),
             room_token      = typing.cast(bytes, src[b'room_token']),
             user            = typing.cast(int, src[b'user']),
-            session_id      = bytes.fromhex(typing.cast(str, src[b'session_id'])),
+            session_id      = typing.cast(bytes, src[b'session_id']),
             data            = typing.cast(bytes, src[b'data']),
             data_size       = typing.cast(int, src[b'data_size']),
             signature       = typing.cast(bytes, src[b'signature']),
@@ -269,9 +269,9 @@ class MessagePosted:
             seqno_reactions = typing.cast(int, src.get(b'seqno_reactions', 0)),
             edited          = typing.cast(float, src[b'edited']) if b'edited' in src else None,
             whisper         = typing.cast(int, src[b'whisper']) if b'whisper' in src else None,
-            alt_id          = bytes.fromhex(typing.cast(str, src[b'alt_id'])) if b'alt_id' in src else None,
-            signing_id      = bytes.fromhex(typing.cast(str, src[b'signing_id'])) if b'signing_id' in src else None,
-            whisper_to      = bytes.fromhex(typing.cast(str, src[b'whisper_to'])) if b'whisper_to' in src else None,
+            alt_id          = typing.cast(bytes, src[b'alt_id']) if b'alt_id' in src else None,
+            signing_id      = typing.cast(bytes, src[b'signing_id']) if b'signing_id' in src else None,
+            whisper_to      = typing.cast(bytes, src[b'whisper_to']) if b'whisper_to' in src else None,
         )
         return result
 

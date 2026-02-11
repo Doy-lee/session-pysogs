@@ -726,7 +726,6 @@ class Plugin:
     def _on_message_posted(self, m: oxenmq.Message):  # pyright: ignore[reportUnusedParameter]
         """Handle message posted events from SOGS, override this in your plugin to customise the behaviour"""
         parse = MessagePosted.from_bencode(m.dataview()[0])
-        print(f"@@@@@@: {parse}")
         if self.on_message_posted_handler:
             self.on_message_posted_handler(m, parse)
 
