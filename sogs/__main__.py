@@ -3,7 +3,7 @@ import atexit
 import re
 import sys
 import typing
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 
 from . import __version__ as version
 
@@ -21,9 +21,6 @@ Examples:
      # Add a global moderator visible as a moderator of all rooms:
     python3 -msogs --add-moderators 050123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef --rooms=+ --visible
 
-    # Add a plugin named 'My Plugin' with Ed25519 public key '012345...' and all permissions enabled:
-    python3 -msogs --add-plugin 0123456789abcdef... --plugin-name 'My Plugin' --plugin-global true --plugin-approver true --plugin-subscribe true
-
     # Set default read/write True and upload False on all rooms
     python3 -msogs --add-perms rw --remove-perms u --rooms='*'
 
@@ -36,9 +33,13 @@ Examples:
      # List all plugins and their room configurations:
     python3 -msogs --list-plugins
 
-     # Add a plugin to specific rooms by ID or Ed25519 pubkey (the plugin must have been added already via --add-plugin):
-    python3 -msogs --add-room-plugin 1                   --rooms my-room other-room --room-plugin-approver true --room-plugin-required true --room-plugin-subscribe true
-    python3 -msogs --add-room-plugin 0123456789abcdef... --rooms my-room            --room-plugin-approver true --room-plugin-required true --room-plugin-subscribe true
+    # Add a plugin with Ed25519 public key '012345...' (first example uses default name and all flags=false and a room id of 1):
+    python3 -msogs --add-plugin 1
+    python3 -msogs --add-plugin 0123456789abcdef... --plugin-name 'My Plugin' --plugin-global true --plugin-approver true --plugin-required true --plugin-subscribe true
+
+     # Add a plugin to specific rooms (first example uses default flags=false and a room id of 1):
+    python3 -msogs --add-room-plugin 1                   --rooms my-room other-room
+    python3 -msogs --add-room-plugin 0123456789abcdef... --rooms my-room --room-plugin-approver true --room-plugin-required true --room-plugin-subscribe true
 
      # Remove a plugin from specific rooms by ID or Ed25519 pubkey:
     python3 -msogs --delete-room-plugin 1                  --rooms my-room other-room
@@ -138,54 +139,54 @@ ap.add_argument(
 
 # Add plugin commands
 ap.add_argument('--add-plugin',
-                help="Add or update a plugin's Ed25519 public key (64 hex chars). Requires "
-                "--plugin-name, --plugin-global, --plugin-approver, and --plugin-subscribe.",
+                help="Add or update a plugin's Ed25519 public key (64 hex chars). "
+                "Omitted flags retain their current values for existing plugins, or use defaults for new plugins.",
                 metavar='ED25519_PUBKEY')
 ap.add_argument('--plugin-name',
-                help="Human-readable name for the plugin (required with --add-plugin)",
+                help="Human-readable name for the plugin (default: abbreviated hex of ed25519 pubkey)",
                 metavar='NAME')
 _ = ap.add_argument('--plugin-global',
                 type=str,
                 choices=['true', 'false'],
-                help="If true, this plugin receives posted messages to approve/deny from showing up in rooms (required with --add-plugin)",
+                help="If true, this plugin applies to all rooms (default: false)",
                 metavar='true|false')
 _ = ap.add_argument('--plugin-approver',
                 type=str,
                 choices=['true', 'false'],
-                help="If true, this plugin receives posted messages to approve/deny from showing up in rooms (required with --add-plugin)",
+                help="If true, plugin can approve/deny messages (default: false)",
                 metavar='true|false')
 _ = ap.add_argument('--plugin-required',
                 type=str,
                 choices=['true', 'false'],
-                help="If true, this plugin must always be connected and running for approval of message in rooms (required with --add-plugin, has no effect if plugin 'approver' is false)",
+                help="If true, plugin must be connected for message approval (default: false, has no effect if 'approver' is false)",
                 metavar='true|false')
 _ = ap.add_argument('--plugin-subscribe',
                 type=str,
                 choices=['true', 'false'],
-                help="If true, plugin receives message details of messages after they are posted in rooms (required with --add-plugin)",
+                help="If true, plugin receives message notifications (default: false)",
                 metavar='true|false')
 
 # Room plugin management
 _ = ap.add_argument('--add-room-plugin',
                     type=str,
                     help=("Add a plugin to specific room(s). Accepts plugin ID (numeric) or Ed25519 "
-                          "public key (64 hex chars). Requires --rooms, --room-plugin-approver, "
-                          "--room-plugin-required, and --room-plugin-subscribe."),
+                          "public key (64 hex chars). Requires --rooms. "
+                          "Omitted flags retain their current values for existing plugins, or use defaults for new plugins."),
                     metavar='PLUGIN_ID_OR_ED_KEY')
 _ = ap.add_argument('--room-plugin-approver',
                     type=str,
                     choices=['true', 'false'],
-                    help=("If true, this plugin receives posted messages to approve/deny from showing up in these rooms (required with --add-room-plugin)"),
+                    help="If true, plugin can approve/deny messages in these rooms (default: false)",
                     metavar='true|false')
 _ = ap.add_argument('--room-plugin-required',
                     type=str,
                     choices=['true', 'false'],
-                    help="If true, this plugin must always be connected and running for approval of message in these rooms (required with --add-room-plugin, has no effect if plugin 'approver' is false)",
+                    help="If true, plugin must be connected for message approval in these rooms (default: false, has no effect if 'approver' is false)",
                     metavar='true|false')
 _ = ap.add_argument('--room-plugin-subscribe',
                     type=str,
                     choices=['true', 'false'],
-                    help=("If true, this plugin receives the message details of messages after they are posted in these rooms (required with --add-room-plugin)"),
+                    help="If true, plugin receives message notifications in these rooms (default: false)",
                     metavar='true|false')
 
 # Plugin deletion
@@ -308,45 +309,15 @@ for i in range(1, len(incompat)):
             print(f"Error: {incompat[j][0]} and {incompat[i][0]} are incompatible", file=sys.stderr)
             sys.exit(1)
 
-# Validate --add-plugin companion arguments
-if args.add_plugin:
-    missing = []
-    if args.plugin_name is None:
-        missing.append('--plugin-name')
-    if args.plugin_global is None:
-        missing.append('--plugin-global')
-    if args.plugin_approver is None:
-        missing.append('--plugin-approver')
-    if args.plugin_required is None:
-        missing.append('--plugin-required')
-    if args.plugin_subscribe is None:
-        missing.append('--plugin-subscribe')
-    if missing:
-        print(f"Error: --add-plugin requires: {', '.join(missing)}", file=sys.stderr)
-        sys.exit(1)
-
-# Validate --add-room-plugin arguments
-if args.add_room_plugin:
+if args.add_room_plugin: # Validate --add-plugin companion arguments
     if not args.rooms:
         print("Error: --add-room-plugin requires --rooms", file=sys.stderr)
         sys.exit(1)
     if '+' in args.rooms or '*' in args.rooms:
-        print("Error: --add-room-plugin requires specific room tokens, not '+' or '*'",
-              file=sys.stderr)
-        sys.exit(1)
-    missing = []
-    if args.room_plugin_approver is None:
-        missing.append('--room-plugin-approver')
-    if args.room_plugin_required is None:
-        missing.append('--room-plugin-required')
-    if args.room_plugin_subscribe is None:
-        missing.append('--room-plugin-subscribe')
-    if missing:
-        print(f"Error: --add-room-plugin requires: {', '.join(missing)}", file=sys.stderr)
+        print("Error: --add-room-plugin requires specific room tokens, not '+' or '*'", file=sys.stderr)
         sys.exit(1)
 
-# Validate --delete-room-plugin arguments
-if args.delete_room_plugin:
+if args.delete_room_plugin: # Validate --delete-room-plugin arguments
     if not args.rooms:
         print("Error: --delete-room-plugin requires --rooms", file=sys.stderr)
         sys.exit(1)
@@ -833,13 +804,15 @@ elif typing.cast(bool, args.add_plugin):
               file=sys.stderr)
         sys.exit(1)
 
-    plugin_name = typing.cast(str, args.plugin_name)
+    # Generate default name: first 4 hex chars + ".." + last 4 hex chars of ed key
+    default_name = f"{ed_pubkey[:2].hex()}..{ed_pubkey[-2:].hex()}"
+    plugin_name = args.plugin_name if args.plugin_name is not None else default_name
 
-    # Parse boolean flags
-    is_global    = args.plugin_global    == 'true'
-    is_approver  = args.plugin_approver  == 'true'
-    is_required  = args.plugin_required  == 'true'
-    is_subscribe = args.plugin_subscribe == 'true'
+    # Parse boolean flags (default to False if not specified)
+    is_global    = args.plugin_global    == 'true' if args.plugin_global    is not None else False
+    is_approver  = args.plugin_approver  == 'true' if args.plugin_approver  is not None else False
+    is_required  = args.plugin_required  == 'true' if args.plugin_required  is not None else False
+    is_subscribe = args.plugin_subscribe == 'true' if args.plugin_subscribe is not None else False
 
     # Derive x25519 key from ed25519 key
     x_pubkey = sodium.crypto_sign_ed25519_pk_to_curve25519(ed_pubkey)
@@ -853,11 +826,12 @@ elif typing.cast(bool, args.add_plugin):
         fields.append(("Ed25519 Pubkey", f"{ed_pubkey.hex()}"))
         fields.append(("X25519 Pubkey",  f"{x_pubkey.hex()}"))
         if existing is None:
+            # Create new plugin with provided or default values
             plugin_id = db.insert_and_get_pk(
                 "INSERT INTO plugins (name, ed_key, x_key, global, approver, required, subscribe) "
                 "VALUES (:name, :ed_key, :x_key, :is_global, :is_approver, :is_required, :is_subscribe)",
                 'id',
-                name         = args.plugin_name,
+                name         = plugin_name,
                 ed_key       = ed_pubkey,
                 x_key        = x_pubkey,
                 is_global    = is_global,
@@ -865,39 +839,75 @@ elif typing.cast(bool, args.add_plugin):
                 is_required  = is_required,
                 is_subscribe = is_subscribe,)
 
-            # Build list of all fields with change status
-            fields.append(("Name",      f"'{args.plugin_name}'"))
+            # Build list of all fields
+            fields.append(("Name",      f"'{plugin_name}'"))
             fields.append(("Global",    f"{is_global}"))
             fields.append(("Approver",  f"{is_approver}"))
             fields.append(("Required",  f"{is_required}"))
             fields.append(("Subscribe", f"{is_subscribe}"))
         else:
-            # Plugin exists - check what changed
+            # Plugin exists - only update explicitly provided fields
             plugin_id:     int  = existing['id']
-            old_name:      str  = existing['name']
+            old_name:      str  = existing['name'] or ""
             old_global:    bool = bool(existing['global'])
             old_approver:  bool = bool(existing['approver'])
             old_required:  bool = bool(existing['required'])
             old_subscribe: bool = bool(existing['subscribe'])
 
-            # Build list of all fields with change status
-            fields.append(("Name",      f"'{old_name}' "    + (f"-> '{plugin_name}'" if old_name     != plugin_name  else "(unchanged)")))
-            fields.append(("Global",    f"{old_global} "    + (f"-> {is_global}"    if old_global    != is_global    else "(unchanged)")))
-            fields.append(("Approver",  f"{old_approver} "  + (f"-> {is_approver}"  if old_approver  != is_approver  else "(unchanged)")))
-            fields.append(("Required",  f"{old_required} "  + (f"-> {is_required}"  if old_required  != is_required  else "(unchanged)")))
-            fields.append(("Subscribe", f"{old_subscribe} " + (f"-> {is_subscribe}" if old_subscribe != is_subscribe else "(unchanged)")))
+            # Determine which fields to update
+            update_fields = []
+            update_params: Dict[str, typing.Any] = {'id': plugin_id}
 
-            has_changes = (old_name != plugin_name or old_global != is_global or old_approver != is_approver or old_required != is_required or old_subscribe != is_subscribe)
-            if has_changes:
-                query("UPDATE plugins SET name = :name, ed_key = :ed_key, x_key = :x_key, global = :is_global, approver = :is_approver, required = :is_required, subscribe = :is_subscribe WHERE id = :id",
-                      name         = plugin_name,
-                      ed_key       = ed_pubkey,
-                      x_key        = x_pubkey,
-                      is_global    = is_global,
-                      is_approver  = is_approver,
-                      is_required  = is_required,
-                      is_subscribe = is_subscribe,
-                      id           = plugin_id,)
+            # Name: update only if explicitly provided
+            if args.plugin_name is not None:
+                if old_name != plugin_name:
+                    update_fields.append("name = :name")
+                    update_params['name'] = plugin_name
+                fields.append(("Name", f"'{old_name}' -> '{plugin_name}'"))
+            else:
+                fields.append(("Name", f"'{old_name}' (unchanged)"))
+
+            # Always update keys (these are derived from the pubkey)
+            update_fields.extend(["ed_key = :ed_key", "x_key = :x_key"])
+            update_params['ed_key'] = ed_pubkey
+            update_params['x_key'] = x_pubkey
+
+            # Boolean flags: update only if explicitly provided
+            if args.plugin_global is not None:
+                if old_global != is_global:
+                    update_fields.append("global = :is_global")
+                    update_params['is_global'] = is_global
+                fields.append(("Global", f"{old_global} -> {is_global}"))
+            else:
+                fields.append(("Global", f"{old_global} (unchanged)"))
+
+            if args.plugin_approver is not None:
+                if old_approver != is_approver:
+                    update_fields.append("approver = :is_approver")
+                    update_params['is_approver'] = is_approver
+                fields.append(("Approver", f"{old_approver} -> {is_approver}"))
+            else:
+                fields.append(("Approver", f"{old_approver} (unchanged)"))
+
+            if args.plugin_required is not None:
+                if old_required != is_required:
+                    update_fields.append("required = :is_required")
+                    update_params['is_required'] = is_required
+                fields.append(("Required", f"{old_required} -> {is_required}"))
+            else:
+                fields.append(("Required", f"{old_required} (unchanged)"))
+
+            if args.plugin_subscribe is not None:
+                if old_subscribe != is_subscribe:
+                    update_fields.append("subscribe = :is_subscribe")
+                    update_params['is_subscribe'] = is_subscribe
+                fields.append(("Subscribe", f"{old_subscribe} -> {is_subscribe}"))
+            else:
+                fields.append(("Subscribe", f"{old_subscribe} (unchanged)"))
+
+            # Execute update only if there are changes
+            if update_fields:
+                query(f"UPDATE plugins SET {', '.join(update_fields)} WHERE id = :id", **update_params)
 
         from sogs.utils import pretty_format_key_value_list
         print(f"Plugin '{plugin_name}' (id={plugin_id}):\n  " + "\n  ".join(pretty_format_key_value_list(fields)))
@@ -910,10 +920,10 @@ elif typing.cast(bool, args.add_room_plugin):
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Parse boolean flags
-    room_plugin_approver  = args.room_plugin_approver == 'true'
-    room_plugin_required  = args.room_plugin_required == 'true'
-    room_plugin_subscribe = args.room_plugin_subscribe == 'true'
+    # Parse boolean flags (default to False if not specified)
+    room_plugin_approver  = args.room_plugin_approver == 'true' if args.room_plugin_approver  is not None else False
+    room_plugin_required  = args.room_plugin_required == 'true' if args.room_plugin_required  is not None else False
+    room_plugin_subscribe = args.room_plugin_subscribe == 'true' if args.room_plugin_subscribe is not None else False
 
     # Verify plugin exists
     from .db import query
@@ -943,22 +953,44 @@ elif typing.cast(bool, args.add_room_plugin):
                     old_approver  = bool(existing['approver'])
                     old_required  = bool(existing['required'])
                     old_subscribe = bool(existing['subscribe'])
-                    has_changes   = (old_approver != room_plugin_approver or old_required != room_plugin_required or old_subscribe != room_plugin_subscribe)
-                    if has_changes:
+
+                    # Determine which fields to update (only explicitly provided ones)
+                    update_fields = []
+                    update_params: dict = {'plugin_id': plugin_id, 'room_id': room.id}
+
+                    if args.room_plugin_approver is not None:
+                        if old_approver != room_plugin_approver:
+                            update_fields.append("approver = :approver")
+                            update_params['approver'] = room_plugin_approver
+                        fields.append(("Approver", f"{old_approver} -> {room_plugin_approver}"))
+                    else:
+                        fields.append(("Approver", f"{old_approver} (unchanged)"))
+
+                    if args.room_plugin_required is not None:
+                        if old_required != room_plugin_required:
+                            update_fields.append("required = :required")
+                            update_params['required'] = room_plugin_required
+                        fields.append(("Required", f"{old_required} -> {room_plugin_required}"))
+                    else:
+                        fields.append(("Required", f"{old_required} (unchanged)"))
+
+                    if args.room_plugin_subscribe is not None:
+                        if old_subscribe != room_plugin_subscribe:
+                            update_fields.append("subscribe = :subscribe")
+                            update_params['subscribe'] = room_plugin_subscribe
+                        fields.append(("Subscribe", f"{old_subscribe} -> {room_plugin_subscribe}"))
+                    else:
+                        fields.append(("Subscribe", f"{old_subscribe} (unchanged)"))
+
+                    # Execute update only if there are changes
+                    if update_fields:
                         query(
-                            "UPDATE room_plugins SET approver = :approver, "
-                            "required = :required, subscribe = :subscribe "
+                            f"UPDATE room_plugins SET {', '.join(update_fields)} "
                             "WHERE plugin = :plugin_id AND room = :room_id",
-                            approver=room_plugin_approver,
-                            required=room_plugin_required,
-                            subscribe=room_plugin_subscribe,
-                            plugin_id=plugin_id,
-                            room_id=room.id
+                            **update_params
                         )
-                    fields.append(("Required",  f"{old_required} "  + (f"->  {room_plugin_required}"  if old_required  != room_plugin_required  else "(unchanged)")))
-                    fields.append(("Approver",  f"{old_approver} "  + (f"->  {room_plugin_approver}"  if old_approver  != room_plugin_approver  else "(unchanged)")))
-                    fields.append(("Subscribe", f"{old_subscribe} " + (f"->  {room_plugin_subscribe}" if old_subscribe != room_plugin_subscribe else "(unchanged)")))
                 else:
+                    # Create new room plugin entry with provided or default values
                     query(
                         "INSERT INTO room_plugins (plugin, room, approver, required, subscribe) "
                         "VALUES (:plugin_id, :room_id, :approver, :required, :subscribe)",
@@ -969,8 +1001,8 @@ elif typing.cast(bool, args.add_room_plugin):
                         subscribe = room_plugin_subscribe
                     )
 
-                    fields.append(("Required",  f"{room_plugin_required}"))
                     fields.append(("Approver",  f"{room_plugin_approver}"))
+                    fields.append(("Required",  f"{room_plugin_required}"))
                     fields.append(("Subscribe", f"{room_plugin_subscribe}"))
 
                 from sogs.utils import pretty_format_key_value_list
