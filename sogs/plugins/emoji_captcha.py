@@ -49,6 +49,7 @@ Getting Started:
                     --plugin-name      'Emoji CAPTCHA Plugin' \
                     --plugin-global    true \
                     --plugin-approver  true \
+                    --plugin-required  true \
                     --plugin-subscribe true
 
 Architecture:

@@ -8,7 +8,7 @@ import enum
 import typing_extensions
 import configparser
 
-from .types import SessionID, MessageID, bt_value, PluginInsertMessage, RoomAddPostRequest, ReactionPosted
+from .types import SessionID, MessageID, bt_value, PluginInsertMessage, RoomAddPostRequest, ReactionPosted, MessagePosted
 from typing          import Callable, Dict, List, Optional, Tuple, Union, Tuple
 from datetime        import timedelta
 from sogs.model.post import Post
@@ -160,7 +160,7 @@ class Plugin:
     post_slash_handlers:        Dict[str, typing.Callable[[Dict[bytes, bt_value], List[str]], bool]] = dataclasses.field(default_factory=dict)
     request_read_handler:       Optional[typing.Callable[[RoomReadRequest], bt_value]]               = None
     on_reaction_posted_handler: Optional[typing.Callable[[oxenmq.Message, ReactionPosted], None]]    = None
-    on_message_posted_handler:  Optional[typing.Callable[[oxenmq.Message, RoomReadRequest], None]]   = None
+    on_message_posted_handler:  Optional[typing.Callable[[oxenmq.Message, MessagePosted], None]]     = None
     conn:                       Optional[oxenmq.ConnectionID]                                        = None
 
     # Post initialised
@@ -259,7 +259,7 @@ class Plugin:
         self.omq = oxenmq.OxenMQ(privkey=self.x_privkey, pubkey=self.x_pubkey, log_level=oxenmq.LogLevel.debug)
         cat      = self.omq.add_category("plugin", access_level=oxenmq.AuthLevel.none)
         cat.add_request_command("filter_message",       self.filter_message)
-        cat.add_command        ("message_posted",       self._on_message_posted)
+        cat.add_command        ("on_message_posted",    self._on_message_posted)
         cat.add_command        ("on_reaction_posted",   self._on_reaction_posted)
         cat.add_request_command("pre_message_command",  self.pre_message_command)
         cat.add_request_command("post_message_command", self.post_message_command)
@@ -317,7 +317,7 @@ class Plugin:
                                 f"if it hasn't been registered by running this command on your SOGS instance\n\n"
                                 f""
                                 f""
-                                f"  python3 -msogs --add-plugin {self.ed_pubkey.hex()} --plugin-name '{self.display_name}' --plugin-global true --plugin-approver true --plugin-subscribe true\n\n"
+                                f"  python3 -msogs --add-plugin {self.ed_pubkey.hex()} --plugin-name '{self.display_name}' --plugin-global true --plugin-approver true --plugin-required true --plugin-subscribe true\n\n"
                                 f""
                                 f""
                                 f"See python3 -msogs --help for more information on this invocation.\n"
@@ -355,6 +355,9 @@ class Plugin:
 
     def register_on_reaction_posted_handler(self, handler: Callable[[oxenmq.Message, ReactionPosted], None]):
         self.on_reaction_posted_handler = handler
+
+    def register_on_message_posted_handler(self, handler: Callable[[oxenmq.Message, MessagePosted], None]):
+        self.on_message_posted_handler = handler
 
     def handle_message_command(self, m: oxenmq.Message, pre_command: bool) -> bytes:
         req = oxenc.bt_deserialize(m.dataview()[0])
@@ -441,7 +444,7 @@ class Plugin:
 
     def filter_message(self, m: oxenmq.Message):
         try:
-            req                  = RoomAddPostRequest.from_bencode(oxenc.bt_deserialize(m.dataview()[0]))
+            req                  = RoomAddPostRequest.from_bencode(m.dataview()[0])
             resp: FilterResponse = self.filter(req)
             return oxenc.bt_serialize(str(resp))
         except Exception as e:
@@ -722,7 +725,10 @@ class Plugin:
 
     def _on_message_posted(self, m: oxenmq.Message):  # pyright: ignore[reportUnusedParameter]
         """Handle message posted events from SOGS, override this in your plugin to customise the behaviour"""
-        pass
+        parse = MessagePosted.from_bencode(m.dataview()[0])
+        print(f"@@@@@@: {parse}")
+        if self.on_message_posted_handler:
+            self.on_message_posted_handler(m, parse)
 
     def _on_reaction_posted(self, m: oxenmq.Message):
         """Handle reaction posted events from SOGS, register a handler to receive these events"""

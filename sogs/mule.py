@@ -166,21 +166,22 @@ def get_relevant_plugins(where_clause: str, room_id: Optional[int] = None, room_
             result[row['id']] = PluginInfo(required=required, name=row['name'])
 
         # Query room-specific plugins and merge with global results
-        query_str = "SELECT plugin, required FROM room_plugins WHERE room = :room_id AND " + where_clause
-        rows      = query(query_str, room_id=room_id)
-        for row in rows:
-            # Determine if the room mandates that the plugin is required
-            required  = True if row['required'] and row['required'] == 1 else False
-            plugin_id = typing.cast(PluginID, row['plugin'])
+        if room_id:
+            query_str = "SELECT plugin, required FROM room_plugins WHERE room = :room_id AND " + where_clause
+            rows      = query(query_str, room_id=room_id)
+            for row in rows:
+                # Determine if the room mandates that the plugin is required
+                required  = True if row['required'] and row['required'] == 1 else False
+                plugin_id = typing.cast(PluginID, row['plugin'])
 
-            # Apply the required flag (note: Plugin ID FK is located in the 'plugin' column for the room_plugins table)
-            if plugin_id in result:
-                result[plugin_id].required |= required
-            else:
-                # This plugin is only applicable in this room, we'll lookup its human readable name
-                name_lookup       = "SELECT name, required FROM plugins WHERE id = :id AND  " + where_clause
-                name_row          = query(name_lookup, id=plugin_id).first()
-                result[plugin_id] = PluginInfo(name=name_row['name'] if name_row else "", required=required)
+                # Apply the required flag (note: Plugin ID FK is located in the 'plugin' column for the room_plugins table)
+                if plugin_id in result:
+                    result[plugin_id].required |= required
+                else:
+                    # This plugin is only applicable in this room, we'll lookup its human readable name
+                    name_lookup       = "SELECT name, required FROM plugins WHERE id = :id AND  " + where_clause
+                    name_row          = query(name_lookup, id=plugin_id).first()
+                    result[plugin_id] = PluginInfo(name=name_row['name'] if name_row else "", required=required)
     return result
 
 # Commands from SOGS/uwsgi
@@ -220,7 +221,7 @@ def plugin_on_room_add_post_request(m: oxenmq.Message) -> Optional[bytes]:
         # TODO: handle edit message
         room              = Room(id=req.room_id)
         msg_id: MessageID = room.insert_message(sogs.types.MessageInsert(
-            unpadded_data    = utils.remove_session_message_padding(req.message_data),
+            unpadded_data    = sogs.utils.remove_session_message_padding(req.message_data),
             padded_data_size = len(req.message_data),
             filtered         = req.filtered,
             user_id          = req.user_id,
@@ -301,7 +302,8 @@ def plugin_filter_message(req: sogs.types.RoomAddPostRequest) -> sogs.plugin.Fil
     # Submit the message to the plugins and collect the async handles
     pending_requests: List[oxenmq.ResultFuture] = []
     for id in plugin_ids:
-        pending_requests.append(o.omq.request_future(plugin_conns[id], "plugin.filter_message", req.to_bencode(), timeout = timedelta(seconds=1).seconds,))
+        if id in plugin_conns:
+            pending_requests.append(o.omq.request_future(plugin_conns[id], "plugin.filter_message", req.to_bencode(), timeout = timedelta(seconds=1).seconds,))
 
     # Await all the async handles
     silent = False
@@ -804,34 +806,51 @@ def relay_on_reaction_posted(m: oxenmq.Message):
 @log_exceptions
 def relay_on_message_posted(msg_id: MessageID):
     # Fetch the message by message ID
-    msg: Optional[Dict[bytes, bt_value]] = None
-    for row in query(
-        f"""
+    row = query(f"""
         SELECT message_details.*, uroom.token AS room_token FROM message_details
         JOIN rooms uroom ON message_details.room = uroom.id
         WHERE message_details.id = :msg_id
-        """,
-        msg_id=msg_id,
-    ):
-        app.logger.debug("Message details:")
-        msg = {}
-        for key in row.keys():
-            app.logger.debug(f"{key}: {row[key]}")
-            key_bytes: bytes = typing.cast(str, key).encode()
-            if row[key]:
-                msg[key_bytes] = row[key]
-            else:
-                msg[key_bytes] = ""
+        """, msg_id=msg_id,).first()
 
-    if msg is None:
+    if row is None:
         return
 
-    # Serialize and send
-    plugin_ids: Dict[PluginID, PluginInfo] = get_relevant_plugins("subscribe = 1", room_id=typing.cast(int, msg[b'room']))
-    if len(plugin_ids) == 0:
-        msg[b'posted']    = str(msg[b'posted'])
-        serialized: bytes = bt_serialize(msg)
+    # Construct MessagePosted directly from row values
+    print("$$$$$$$$$$$$$$")
+    message_posted = sogs.types.MessagePosted(
+        id              = typing.cast(int,               row['id']),
+        room            = typing.cast(int,               row['room']),
+        room_token      = typing.cast(str,               row['room_token']).encode('utf-8'),
+        user            = typing.cast(int,               row['user']),
+        session_id      = bytes.fromhex(typing.cast(str, row['session_id'])),
+        data            = typing.cast(bytes,             row['data']),
+        data_size       = typing.cast(int,               row['data_size']),
+        signature       = typing.cast(bytes,             row['signature']),
+        posted          = typing.cast(float,             row['posted']),
+        seqno           = typing.cast(int,               row['seqno']),
+        seqno_creation  = typing.cast(int,               row['seqno_creation']),
+        seqno_data      = typing.cast(int,               row['seqno_data']),
+        filtered        = typing.cast(bool,              row['filtered']),
+        whisper_mods    = typing.cast(bool,              row['whisper_mods']),
+        seqno_reactions = typing.cast(int,               row['seqno_reactions']),
+        edited          = typing.cast(float,             row['edited'])      if row['edited']     else None,
+        whisper         = typing.cast(int,               row['whisper'])     if row['whisper']    else None,
+        alt_id          = bytes.fromhex(typing.cast(str, row['alt_id']))     if row['alt_id']     else None,
+        signing_id      = bytes.fromhex(typing.cast(str, row['signing_id'])) if row['signing_id'] else None,
+        whisper_to      = bytes.fromhex(typing.cast(str, row['whisper_to'])) if row['whisper_to'] else None,
+    )
 
-        # Relay message to plugin's post message hooks
-        for plugin_id in plugin_ids.keys():
-            o.omq.send(plugin_conns[plugin_id], "plugin.message_posted", serialized)
+    # Get relevant plugins for this room
+    print("###########")
+    plugin_ids: Dict[PluginID, PluginInfo] = get_relevant_plugins("subscribe = 1", room_id=message_posted.room)
+    if len(plugin_ids) == 0:
+        return
+
+    # Serialize and send to each plugin
+    print("XXXXXXXXXXXXXX")
+    serialized: bytes = message_posted.to_bencode()
+    print("YYYYYYYYYYYYYY")
+    for plugin_id in plugin_ids.keys():
+        if plugin_id in plugin_conns:
+            print(f"Sending to {plugin_id}")
+            o.omq.send(plugin_conns[plugin_id], "plugin.on_message_posted", serialized)

@@ -1092,7 +1092,7 @@ class Room:
                                                       room_token   = self.token,
                                                       room_name    = self.name,
                                                       user_id      = user.id,
-                                                      session_id   = user.session_id,
+                                                      session_id   = bytes.fromhex(user.session_id),
                                                       message_data = data,
                                                       data_size    = len(data),
                                                       sig          = sig,
@@ -1107,7 +1107,7 @@ class Room:
         # Post the message to the mule worker to be run against the plugin hooks
         plugin_response: Dict[bytes, sogs.types.bt_value] = {}
         try:
-            plugin_response = bt_deserialize(send_mule_request_synchronous("worker.on_room_add_post_request", room_msg_post.to_bencode(), prefix=None)[0])
+            plugin_response = bt_deserialize(send_mule_request_synchronous("worker.on_room_add_post_request", room_msg_post.to_dict(), prefix=None)[0])
         except Exception as e:
             app.logger.warning(f"Plugin filter exception: {e}")
             if not test_suite:

@@ -20,6 +20,7 @@ MessageID  = int
 # values are produced and consumed by the module oxenc's bt_serialize/bt_deserialize functions.
 bt_value = Union[
     int,
+    float,
     bytes,
     str,
     List["bt_value"],
@@ -220,6 +221,95 @@ class ReactionPosted:
             b'is_mod':     int(self.is_mod),
             b'is_admin':   int(self.is_admin),
         }
+
+    def to_bencode(self) -> bytes:
+        return oxenc.bt_serialize(self.to_dict())
+
+@dataclasses.dataclass
+class MessagePosted:
+    """Event sent to plugins when a message is posted to a room"""
+    id:              MessageID       # Message ID
+    room:            int             # Room ID
+    room_token:      RoomToken       # Room token (bytes)
+    user:            int             # User ID
+    session_id:      SessionID       # 33-byte 25-blinded Session ID
+    data:            bytes           # Raw message data
+    data_size:       int
+    signature:       bytes
+    posted:          TimestampS      # Unix timestamp
+    seqno:           int
+    seqno_creation:  int
+    seqno_data:      int
+    filtered:        bool
+    whisper_mods:    bool
+    seqno_reactions: int
+    edited:          Optional[TimestampS] = None  # Timestamp of when the message was edited
+    whisper:         Optional[int]        = None  # User ID that the message was whispered to
+    whisper_to:      Optional[SessionID]  = None  # 33-byte 15/25-blinded Session ID that we whispered to
+    alt_id:          Optional[SessionID]  = None  # 33-byte 15-blinded Session ID
+    signing_id:      Optional[SessionID]  = None  # 33-byte signing Session ID
+
+    @staticmethod
+    def from_dict(src: Dict[bytes, bt_value]) -> "MessagePosted":
+        result = MessagePosted(
+            id              = typing.cast(int, src[b'id']),
+            room            = typing.cast(int, src[b'room']),
+            room_token      = typing.cast(bytes, src[b'room_token']),
+            user            = typing.cast(int, src[b'user']),
+            session_id      = bytes.fromhex(typing.cast(str, src[b'session_id'])),
+            data            = typing.cast(bytes, src[b'data']),
+            data_size       = typing.cast(int, src[b'data_size']),
+            signature       = typing.cast(bytes, src[b'signature']),
+            posted          = typing.cast(float, src[b'posted']),
+            seqno           = typing.cast(int, src[b'seqno']),
+            seqno_creation  = typing.cast(int, src[b'seqno_creation']),
+            seqno_data      = typing.cast(int, src[b'seqno_data']),
+            filtered        = typing.cast(bool, src.get(b'filtered', False)),
+            whisper_mods    = typing.cast(bool, src.get(b'whisper_mods', False)),
+            seqno_reactions = typing.cast(int, src.get(b'seqno_reactions', 0)),
+            edited          = typing.cast(float, src[b'edited']) if b'edited' in src else None,
+            whisper         = typing.cast(int, src[b'whisper']) if b'whisper' in src else None,
+            alt_id          = bytes.fromhex(typing.cast(str, src[b'alt_id'])) if b'alt_id' in src else None,
+            signing_id      = bytes.fromhex(typing.cast(str, src[b'signing_id'])) if b'signing_id' in src else None,
+            whisper_to      = bytes.fromhex(typing.cast(str, src[b'whisper_to'])) if b'whisper_to' in src else None,
+        )
+        return result
+
+    @staticmethod
+    def from_bencode(data: Union[bytes, memoryview]) -> "MessagePosted":
+        d: Dict[bytes, bt_value] = oxenc.bt_deserialize(data)
+        result                   = MessagePosted.from_dict(d)
+        return result
+
+    def to_dict(self) -> Dict[bytes, bt_value]:
+        result: Dict[bytes, bt_value] = {
+            b'id':              self.id,
+            b'room':            self.room,
+            b'room_token':      self.room_token,
+            b'user':            self.user,
+            b'session_id':      self.session_id.hex().encode('utf-8'),
+            b'data':            self.data,
+            b'data_size':       self.data_size,
+            b'signature':       self.signature,
+            b'posted':          str(self.posted).encode('utf-8'),
+            b'seqno':           self.seqno,
+            b'seqno_creation':  self.seqno_creation,
+            b'seqno_data':      self.seqno_data,
+            b'filtered':        int(self.filtered),
+            b'whisper_mods':    int(self.whisper_mods),
+            b'seqno_reactions': self.seqno_reactions,
+        }
+        if self.edited is not None:
+            result[b'edited'] = self.edited
+        if self.whisper is not None:
+            result[b'whisper'] = self.whisper
+        if self.alt_id is not None:
+            result[b'alt_id'] = self.alt_id
+        if self.signing_id is not None:
+            result[b'signing_id'] = self.signing_id
+        if self.whisper_to is not None:
+            result[b'whisper_to'] = self.whisper_to
+        return result
 
     def to_bencode(self) -> bytes:
         return oxenc.bt_serialize(self.to_dict())

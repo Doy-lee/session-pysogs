@@ -37,8 +37,8 @@ Examples:
     python3 -msogs --list-plugins
 
      # Add a plugin to specific rooms by ID or Ed25519 pubkey (the plugin must have been added already via --add-plugin):
-    python3 -msogs --add-room-plugin 1                   --rooms my-room other-room --room-plugin-approver true --room-plugin-required false --room-plugin-subscribe true
-    python3 -msogs --add-room-plugin 0123456789abcdef... --rooms my-room            --room-plugin-approver true --room-plugin-required false --room-plugin-subscribe true
+    python3 -msogs --add-room-plugin 1                   --rooms my-room other-room --room-plugin-approver true --room-plugin-required true --room-plugin-subscribe true
+    python3 -msogs --add-room-plugin 0123456789abcdef... --rooms my-room            --room-plugin-approver true --room-plugin-required true --room-plugin-subscribe true
 
      # Remove a plugin from specific rooms by ID or Ed25519 pubkey:
     python3 -msogs --delete-room-plugin 1                  --rooms my-room other-room
@@ -144,20 +144,25 @@ ap.add_argument('--add-plugin',
 ap.add_argument('--plugin-name',
                 help="Human-readable name for the plugin (required with --add-plugin)",
                 metavar='NAME')
-ap.add_argument('--plugin-global',
+_ = ap.add_argument('--plugin-global',
                 type=str,
                 choices=['true', 'false'],
-                help="If true, plugin applies to all rooms (required with --add-plugin)",
+                help="If true, this plugin receives posted messages to approve/deny from showing up in rooms (required with --add-plugin)",
                 metavar='true|false')
-ap.add_argument('--plugin-approver',
+_ = ap.add_argument('--plugin-approver',
                 type=str,
                 choices=['true', 'false'],
-                help="If true, plugin can deny/disapprove messages (required with --add-plugin)",
+                help="If true, this plugin receives posted messages to approve/deny from showing up in rooms (required with --add-plugin)",
                 metavar='true|false')
-ap.add_argument('--plugin-subscribe',
+_ = ap.add_argument('--plugin-required',
                 type=str,
                 choices=['true', 'false'],
-                help="If true, plugin receives new message notifications (required with --add-plugin)",
+                help="If true, this plugin must always be connected and running for approval of message in rooms (required with --add-plugin, has no effect if plugin 'approver' is false)",
+                metavar='true|false')
+_ = ap.add_argument('--plugin-subscribe',
+                type=str,
+                choices=['true', 'false'],
+                help="If true, plugin receives message details of messages after they are posted in rooms (required with --add-plugin)",
                 metavar='true|false')
 
 # Room plugin management
@@ -170,20 +175,17 @@ _ = ap.add_argument('--add-room-plugin',
 _ = ap.add_argument('--room-plugin-approver',
                     type=str,
                     choices=['true', 'false'],
-                    help=("If true, plugin can deny/disapprove messages in these rooms (required "
-                          "with --add-room-plugin)"),
+                    help=("If true, this plugin receives posted messages to approve/deny from showing up in these rooms (required with --add-room-plugin)"),
                     metavar='true|false')
 _ = ap.add_argument('--room-plugin-required',
                     type=str,
                     choices=['true', 'false'],
-                    help=("If true, plugin's approval is required for messages in these rooms "
-                          "(required with --add-room-plugin)"),
+                    help="If true, this plugin must always be connected and running for approval of message in these rooms (required with --add-room-plugin, has no effect if plugin 'approver' is false)",
                     metavar='true|false')
 _ = ap.add_argument('--room-plugin-subscribe',
                     type=str,
                     choices=['true', 'false'],
-                    help=("If true, plugin receives all new messages in these rooms "
-                          "(required with --add-room-plugin)"),
+                    help=("If true, this plugin receives the message details of messages after they are posted in these rooms (required with --add-room-plugin)"),
                     metavar='true|false')
 
 # Plugin deletion
@@ -315,6 +317,8 @@ if args.add_plugin:
         missing.append('--plugin-global')
     if args.plugin_approver is None:
         missing.append('--plugin-approver')
+    if args.plugin_required is None:
+        missing.append('--plugin-required')
     if args.plugin_subscribe is None:
         missing.append('--plugin-subscribe')
     if missing:
@@ -756,7 +760,7 @@ elif args.list_plugins:
     from .db import query
 
     # Get all plugins
-    plugins = query("SELECT id, name, ed_key, x_key, global, approver, subscribe FROM plugins ORDER BY id").all()
+    plugins = query("SELECT id, name, ed_key, x_key, global, approver, required, subscribe FROM plugins ORDER BY id").all()
 
     if not plugins:
         print("No plugins registered.")
@@ -766,6 +770,7 @@ elif args.list_plugins:
             name           = typing.cast(str, plugin['name'])
             global_flag    = bool(plugin['global'])
             approver_flag  = bool(plugin['approver'])
+            required_flag  = bool(plugin['required'])
             subscribe_flag = bool(plugin['subscribe'])
 
             # Get keys from database
@@ -786,9 +791,9 @@ elif args.list_plugins:
                 invalid_key_warning = " (⛔ Ed25519 pubkey was not a valid key)"
 
             print(f"[{index:02d}] '{name}' (Plugin ID={plugin_id})")
-            print(f"  Ed25519 Pubkey:            {ed25519_key.hex()}{invalid_key_warning}")
-            print(f"  X25519 Pubkey:             {x25519_key.hex()}")
-            print(f"  Global/Approver/Subscribe: {global_flag}/{approver_flag}/{subscribe_flag}")
+            print(f"  Ed25519 Pubkey:                     {ed25519_key.hex()}{invalid_key_warning}")
+            print(f"  X25519 Pubkey:                      {x25519_key.hex()}")
+            print(f"  Global/Approver/Required/Subscribe: {global_flag}/{approver_flag}/{required_flag}/{subscribe_flag}")
 
             # Get room_plugins for this plugin
             room_plugins = query(("SELECT rp.room, r.token, r.name, rp.approver, rp.required, rp.subscribe "
@@ -833,6 +838,7 @@ elif typing.cast(bool, args.add_plugin):
     # Parse boolean flags
     is_global    = args.plugin_global    == 'true'
     is_approver  = args.plugin_approver  == 'true'
+    is_required  = args.plugin_required  == 'true'
     is_subscribe = args.plugin_subscribe == 'true'
 
     # Derive x25519 key from ed25519 key
@@ -841,27 +847,29 @@ elif typing.cast(bool, args.add_plugin):
     from .db import query
     with db.transaction():
         # Check if plugin already exists
-        existing = query("SELECT id, name, global, approver, subscribe FROM plugins WHERE ed_key = :key", key=ed_pubkey).first()
+        existing = query("SELECT id, name, global, approver, required, subscribe FROM plugins WHERE ed_key = :key", key=ed_pubkey).first()
 
         fields: List[Tuple[str, str]] = []
         fields.append(("Ed25519 Pubkey", f"{ed_pubkey.hex()}"))
         fields.append(("X25519 Pubkey",  f"{x_pubkey.hex()}"))
         if existing is None:
             plugin_id = db.insert_and_get_pk(
-                "INSERT INTO plugins (name, ed_key, x_key, global, approver, subscribe) "
-                "VALUES (:name, :ed_key, :x_key, :is_global, :is_approver, :is_subscribe)",
+                "INSERT INTO plugins (name, ed_key, x_key, global, approver, required, subscribe) "
+                "VALUES (:name, :ed_key, :x_key, :is_global, :is_approver, :is_required, :is_subscribe)",
                 'id',
                 name         = args.plugin_name,
                 ed_key       = ed_pubkey,
                 x_key        = x_pubkey,
                 is_global    = is_global,
                 is_approver  = is_approver,
+                is_required  = is_required,
                 is_subscribe = is_subscribe,)
 
             # Build list of all fields with change status
             fields.append(("Name",      f"'{args.plugin_name}'"))
             fields.append(("Global",    f"{is_global}"))
             fields.append(("Approver",  f"{is_approver}"))
+            fields.append(("Required",  f"{is_required}"))
             fields.append(("Subscribe", f"{is_subscribe}"))
         else:
             # Plugin exists - check what changed
@@ -869,22 +877,25 @@ elif typing.cast(bool, args.add_plugin):
             old_name:      str  = existing['name']
             old_global:    bool = bool(existing['global'])
             old_approver:  bool = bool(existing['approver'])
+            old_required:  bool = bool(existing['required'])
             old_subscribe: bool = bool(existing['subscribe'])
 
             # Build list of all fields with change status
             fields.append(("Name",      f"'{old_name}' "    + (f"-> '{plugin_name}'" if old_name     != plugin_name  else "(unchanged)")))
             fields.append(("Global",    f"{old_global} "    + (f"-> {is_global}"    if old_global    != is_global    else "(unchanged)")))
             fields.append(("Approver",  f"{old_approver} "  + (f"-> {is_approver}"  if old_approver  != is_approver  else "(unchanged)")))
+            fields.append(("Required",  f"{old_required} "  + (f"-> {is_required}"  if old_required  != is_required  else "(unchanged)")))
             fields.append(("Subscribe", f"{old_subscribe} " + (f"-> {is_subscribe}" if old_subscribe != is_subscribe else "(unchanged)")))
 
-            has_changes = (old_name != plugin_name or old_global != is_global or old_approver != is_approver or old_subscribe != is_subscribe)
+            has_changes = (old_name != plugin_name or old_global != is_global or old_approver != is_approver or old_required != is_required or old_subscribe != is_subscribe)
             if has_changes:
-                query("UPDATE plugins SET name = :name, ed_key = :ed_key, x_key = :x_key, global = :is_global, approver = :is_approver, subscribe = :is_subscribe WHERE id = :id",
+                query("UPDATE plugins SET name = :name, ed_key = :ed_key, x_key = :x_key, global = :is_global, approver = :is_approver, required = :is_required, subscribe = :is_subscribe WHERE id = :id",
                       name         = plugin_name,
                       ed_key       = ed_pubkey,
                       x_key        = x_pubkey,
                       is_global    = is_global,
                       is_approver  = is_approver,
+                      is_required  = is_required,
                       is_subscribe = is_subscribe,
                       id           = plugin_id,)
 
