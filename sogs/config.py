@@ -3,6 +3,7 @@ import os
 import re
 import logging
 import coloredlogs
+from typing import Set
 
 logger = logging.getLogger("config")
 
@@ -29,11 +30,11 @@ ROOM_ACTIVE_PRUNE_THRESHOLD = 60 * 86400.0  # Seconds, but specified in config f
 ROOM_DEFAULT_ACTIVE_THRESHOLD = 7 * 86400.0  # Seconds, but specified in config file as days
 MESSAGE_HISTORY_PRUNE_THRESHOLD = 30 * 86400.0  # Seconds, but specified in config file as days
 IMPORT_ADJUST_MS = 0
-PROFANITY_FILTER = False
-PROFANITY_SILENT = True
-PROFANITY_CUSTOM = None
-ALPHABET_FILTERS = set()
-ALPHABET_SILENT = True
+PROFANITY_FILTER: bool     = False
+PROFANITY_SILENT: bool     = True
+PROFANITY_CUSTOM           = None
+ALPHABET_FILTERS: Set[str] = set()
+ALPHABET_SILENT:  bool     = True
 FILTER_MODS = False
 REQUIRE_BLIND_KEYS = True
 REQUIRE_BLIND_V2 = False

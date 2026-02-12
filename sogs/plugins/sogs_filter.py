@@ -1,222 +1,223 @@
 import re
-from typing import Optional
+import typing
+import typing_extensions
+import sogs.types
+import dataclasses
+import enum
+import copy
+
+from typing import Optional, Dict, List, Tuple, Set, Union
 from sogs.plugin import Plugin, ReplySettings, FilterResponse
 from sogs.model.post import Post
 
-def profanity_check(*args):
-    import better_profanity
+class FilterType(enum.Enum):
+    Profanity = 0
+    Alphabet  = 1
 
-    for part in args:
-        if better_profanity.profanity.contains_profanity(part):
-            print(f"Profanity detected in message part: \"{part}\"")
-            return True
+@dataclasses.dataclass
+class Filter:
+    profanity:              bool                     = False
+    profanity_silent:       bool                     = False
+    alphabets:              Set[str]                 = dataclasses.field(default_factory=set) # e.g.: 'persian', 'arabic', 'cyrillic'
+    alphabet_silent:        bool                     = False
+    universal_reply:        Optional[ReplySettings]  = None
+    profanity_reply:        Optional[ReplySettings]  = None
+    alphabet_default_reply: Optional[ReplySettings]  = None
+    alphabet_other_replies: Dict[str, ReplySettings] = dataclasses.field(default_factory=dict)
 
-    return False
-
-
+@dataclasses.dataclass
 class SogsFilterPlugin(Plugin):
+    """
+    Handles profanity filtering and alphabet detection/direction (replacing the functionality which
+    was previously built into SOGS directly).
+    """
+
+    filter_mods:  bool                                  = False
+    rooms:        Dict[sogs.types.RoomTokenStr, Filter] = {}
 
     # Character ranges for different filters.  This is ordered because some are subsets of each other
     # (e.g. persian is a subset of the arabic character range).
-    alphabet_filter_patterns = [
-        (
-            'persian',
-            re.compile(
-                r'[\u0621-\u0628\u062a-\u063a\u0641-\u0642\u0644-\u0648\u064e-\u0651\u0655'
-                r'\u067e\u0686\u0698\u06a9\u06af\u06be\u06cc]'
-            ),
-        ),
-        (
-            'arabic',
-            re.compile(r'[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff\ufb50-\ufdff\ufe70-\ufefe]'),
-        ),
+    alphabet_filter_patterns: List[Tuple[str, re.Pattern]] = [
+        ('persian',  re.compile(r'[\u0621-\u0628\u062a-\u063a\u0641-\u0642\u0644-\u0648\u064e-\u0651\u0655\u067e\u0686\u0698\u06a9\u06af\u06be\u06cc]')),
+        ('arabic',   re.compile(r'[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff\ufb50-\ufdff\ufe70-\ufefe]')),
         ('cyrillic', re.compile(r'[\u0400-\u04ff]')),
-        ('debug', re.compile(r'debug alphabet test')),
+        ('debug',    re.compile(r'debug alphabet test')),
     ]
 
-    """
-    Handles profanity filtering and alphabet detection/direction (replacing the functionality
-            which was previously built into SOGS directly).
+    def __post_init__(self):
+        # Legacy path: import deprecated filtering settings from config.py
+        if 1:
+            import sogs.config
+            self.filter_mods = sogs.config.FILTER_MODS
+            legacy_filter    = Filter(profanity        = sogs.config.PROFANITY_FILTER,
+                                      profanity_silent = sogs.config.PROFANITY_SILENT,
+                                      alphabets        = sogs.config.ALPHABET_FILTERS,
+                                      alphabet_silent  = sogs.config.ALPHABET_SILENT)
 
-    Pass config_file=path_to_sogs.ini or config_file=True to load config from
-    environment SOGS_CONFIG variable or 'sogs.ini' in pwd
+            # FILTER_SETTINGS is a hash table that maps the room->filter category->reply settings.
+            # We migrate those filter categories into our self.rooms hash table. These rooms inherit
+            # the filter options specified by the globally defined `legacy_filter`.
+            #
+            # Example:
+            #
+            # FILTER_SETTINGS: Dict[RoomTokenStr, Dict[FilterCategoryStr, Dict[str, Union[List[str], str, bool, None]]]] = {
+            #   '*': {
+            #       '*': {'reply': ['...'], 'profile_name': 'SOGS', 'public': False},
+            #       'profanity': {'reply': ['...']},
+            #   },
+            #   'specific_room': {
+            #       'alphabet': {'reply': ['...']},
+            #       'persian': {'reply': ['...']},
+            #   }
+            # }
+            #
+            # Where filter category is ('*', 'profanity', 'alphabet', or language like 'persian')
+            FILTER_SETTINGS = typing.cast(Dict[str, Dict[str, Dict[str, Union[List[str], str, bool, None]]]], sogs.config.FILTER_SETTINGS)
+            for room in FILTER_SETTINGS:
+                self.rooms[room] = copy.copy(legacy_filter)
+                for room_category in FILTER_SETTINGS[room]:
+                    reply_src_dict: Dict[str, Union[List[str], str, bool, None]] = FILTER_SETTINGS[room][room_category]
+                    reply_dest:     Optional[ReplySettings]                      = None
+                    if room_category == '*':
+                        self.rooms[room].universal_reply = ReplySettings()
+                        reply_dest                       = self.rooms[room].universal_reply
+                    elif room_category == 'profanity':
+                        self.rooms[room].profanity_reply = ReplySettings()
+                        reply_dest                       = self.rooms[room].profanity_reply
+                    elif room_category == 'alphabet':
+                        self.rooms[room].alphabet_default_reply = ReplySettings()
+                        reply_dest                              = self.rooms[room].alphabet_default_reply
+                    else:
+                        self.rooms[room].alphabet_other_replies[room_category] = ReplySettings()
+                        reply_dest                                             = self.rooms[room].alphabet_other_replies[room_category]
 
-    Pass reply_name to override the default Session display name of this plugin (SOGS Plugin)
-    """
+                    assert reply_dest
+                    reply_dest.public        = typing.cast(Union[bool, None], reply_src_dict.get('public',       None))
+                    reply_dest.profile_name  = typing.cast(Union[str,  None], reply_src_dict.get('profile_name', None))
+                    reply_dest.reply_formats = typing.cast(List[str],         reply_src_dict.get('reply_formats', []))
 
-    def __init__(self, privkey, pubkey, *args, display_name="SOGS Plugin", config_file=None):
+            # ROOM_OVERRIDES is a hash table that maps room to the various settings which are
+            # different from the legacy variable FILTER_SETTINGS. We migrate these values into the
+            # rooms and update this plugin's `Filter` class accordingly.
+            #
+            # Example:
+            #
+            # ROOM_OVERRIDES: Dict[RoomTokenStr, Dict[str, Union[bool, Set[str]]]] = { # {'profanity_filter': bool, 'alphabet_filters': Set[str], ...}
+            #   'room_token': {
+            #     'profanity_filter': True,
+            #     'alphabet_filters': {'persian'},
+            #   }
+            # }
+            ROOM_OVERRIDES = typing.cast(Dict[str, Dict[str, Union[bool, Set[str]]]], sogs.config.ROOM_OVERRIDES)
+            for room_token in ROOM_OVERRIDES:
+                self.rooms[room_token] = copy.copy(legacy_filter)
+                if 'profanity_filter' in ROOM_OVERRIDES[room_token]:
+                    self.rooms[room_token].profanity = typing.cast(bool, ROOM_OVERRIDES[room_token]['profanity_filter'])
+                if 'profanity_silent' in ROOM_OVERRIDES[room_token]:
+                    self.rooms[room_token].profanity_silent = typing.cast(bool, ROOM_OVERRIDES[room_token]['profanity_silent'])
+                if 'alphabet_filters' in ROOM_OVERRIDES[room_token]:
+                    self.rooms[room_token].alphabets = typing.cast(Set[str], ROOM_OVERRIDES[room_token]['alphabet_filters'])
+                if 'alphabet_silent' in ROOM_OVERRIDES[room_token]:
+                    self.rooms[room_token].alphabet_silent = typing.cast(bool, ROOM_OVERRIDES[room_token]['alphabet_silent'])
 
-        self.room_settings = {}
-        self.filter_mods = False
+        if '*' not in self.rooms:
+            self.rooms['*'] = Filter()
 
-        if isinstance(config_file, str):
-            import os
-
-            os.environ['SOGS_CONFIG'] = config_file
-
-        from sogs import config
-
-        self.config = config
-        from sogs.crypto import server_pubkey_bytes
-
-        sogs_pubkey = server_pubkey_bytes
-        sogs_address = config.OMQ_LISTEN[0].replace('*', '127.0.0.1')
-        self.from_sogs_config = True
-        self.load_sogs_settings()
-
-        Plugin.__init__(self, sogs_address, sogs_pubkey, privkey, pubkey, display_name)
-
-    def load_sogs_settings(self):
-        self.filter_mods = self.config.FILTER_MODS
-        settings = {
-            'profanity_filter': self.config.PROFANITY_FILTER,
-            'profanity_silent': self.config.PROFANITY_SILENT,
-            'alphabet_filters': self.config.ALPHABET_FILTERS,
-            'alphabet_silent': self.config.ALPHABET_SILENT,
-            'reply_settings': None,
-        }
-        self.room_settings['*'] = {}
-        for k in self.config.FILTER_SETTINGS:
-            if (
-                'profanity' in self.config.FILTER_SETTINGS[k]
-                or '*' in self.config.FILTER_SETTINGS[k]
-            ):
-                self.room_settings[k] = {}
-
-        for k in settings:
-            for room in self.room_settings:
-                self.room_settings[room][k] = settings[k]
-
-        print(f"overrides:\n{self.config.ROOM_OVERRIDES}\n")
-        for room_token in self.config.ROOM_OVERRIDES:
-            self.room_settings[room_token] = {}
-            for k in settings:
-                self.room_settings[room_token][k] = settings[k]
-            for k in (
-                'profanity_filter',
-                'profanity_silent',
-                'alphabet_filters',
-                'alphabet_silent',
-            ):
-                if k in self.config.ROOM_OVERRIDES[room_token]:
-                    self.room_settings[room_token][k] = self.config.ROOM_OVERRIDES[room_token][k]
-
-        print(self.room_settings)
-
-    def get_reply_settings(self, room_token, *args, filter_type='profanity', filter_lang=None) -> Optional[ReplySettings]:
-        if not self.config.FILTER_SETTINGS:
-            return None
-
-        reply_format = None
-        profile_name = 'SOGS'
-        public = False
-
+    def get_reply_settings(self, room_token: sogs.types.RoomTokenStr, filter_type: FilterType = FilterType.Profanity, filter_lang: Optional[str] = None) -> Optional[ReplySettings]:
         # Precedences from least to most specific so that we load values from least specific first
         # then overwrite them if we find a value in a more specific section
-        room_precedence = ('*', room_token)
-        filter_precedence = ('*', filter_type, filter_lang) if filter_lang else ('*', filter_type)
-
+        room_precedence: List[sogs.types.RoomTokenStr] = ['*', room_token]
+        result:          ReplySettings                 = ReplySettings()
         for r in room_precedence:
-            s1 = self.config.FILTER_SETTINGS.get(r)
-            if s1 is None:
+            room_filter: Optional[Filter] = self.rooms.get(r)
+            if room_filter is None:
                 continue
-            for f in filter_precedence:
-                settings = s1.get(f)
-                if settings is None:
-                    continue
 
-                rf = settings.get('reply')
-                pn = settings.get('profile_name')
-                pb = settings.get('public')
-                if rf is not None:
-                    reply_format = rf
-                if pn is not None:
-                    profile_name = pn
-                if pb is not None:
-                    public = pb
+            # Use room universal settings
+            if room_filter.universal_reply:
+                result.load_from(room_filter.universal_reply)
 
-        if reply_format is None:
+            # Or use the settings for the specified filter type
+            if filter_type == FilterType.Profanity:
+                if room_filter.profanity_reply:
+                    result.load_from(room_filter.profanity_reply)
+
+            if filter_type == FilterType.Alphabet:
+                if room_filter.alphabet_default_reply:
+                    result.load_from(room_filter.alphabet_default_reply)
+
+            # Or use the language filters if it was specified
+            if filter_lang:
+                if filter_lang in room_filter.alphabet_other_replies:
+                    lang_filter: ReplySettings = room_filter.alphabet_other_replies[filter_lang]
+                    result.load_from(lang_filter)
+
+        if len(result.reply_formats) == 0:
             return None
 
-        return ReplySettings(reply_formats=reply_format, profile_name=profile_name, public=public)
+        return result
 
-    def filter(self, request):
-        # is_mod should be "mod" but is empty if not, so just check len
-        if request[b"is_mod"] and not self.filter_mods:
-            return FilterResponse.Accept
+    @typing_extensions.override
+    def filter(self, req: sogs.types.RoomAddPostRequest) -> FilterResponse:
+        result = FilterResponse.Accept
+        if req.is_mod and not self.filter_mods:
+            return result
 
-        if request[b"message_id"] != -1:
-            print("message filter request is an edit")
-
-        room_token = request[b"room_token"].decode('utf-8')
+        room_token: str = req.room_token.decode('utf-8')
         print(f"filtering for room_token: {room_token}")
-        if room_token in self.room_settings:
-            settings = self.room_settings[room_token]
-            print("filter using room-specific settings")
-        else:
-            settings = self.room_settings['*']
-            print("filter using global settings")
 
-        if not (settings['profanity_filter'] or settings['alphabet_filters']):
-            return FilterResponse.Accept
+        # Retrieve the filter for this room
+        room_filter = Filter()
+        if room_token in self.rooms:
+            room_filter = self.rooms[room_token]
+        elif '*' in self.rooms:
+            room_filter = self.rooms['*']
 
-        msg = Post(raw=request[b"message_data"])
+        if not room_filter.profanity and len(room_filter.alphabets) == 0:
+            return result
 
-        prof_result = FilterResponse.Accept
-        if settings['profanity_filter'] and profanity_check(msg.text, msg.username):
-            reply_settings = self.get_reply_settings(room_token, filter_type='profanity')
+        # Decode the message
+        msg = Post(raw=req.message_data)
+
+        # Filter for profanities
+        def profanity_check(*args: str):
+            import better_profanity
+            for part in args:
+                if better_profanity.profanity.contains_profanity(part):
+                    return True
+            return False
+
+        if room_filter.profanity and profanity_check(typing.cast(str, msg.text), typing.cast(str, msg.username)):
+            reply_settings = self.get_reply_settings(room_token, filter_type=FilterType.Profanity)
             if reply_settings:
                 print(f"replying with format: {reply_settings}")
-                self.reply(
-                    request[b"room_name"],
-                    request[b"room_token"],
-                    bytes.fromhex(request[b"session_id"].decode()),
-                    request[b"message_data"],
-                    msg.username,
-                    reply_settings=reply_settings,
-                )
-            prof_result = (
-                FilterResponse.Silent if settings['profanity_silent'] else FilterResponse.Reject
-            )
+                _ = self.reply(
+                    room_name       = req.room_name,
+                    room_token      = req.room_token,
+                    user_session_id = req.session_id,
+                    username        = msg.username,
+                    reply_settings  = reply_settings)
+            result = FilterResponse.Silent if room_filter.profanity_silent else FilterResponse.Reject
 
-        if not settings['alphabet_filters']:
-            return prof_result
+        # Filter for alphabets
+        if result == FilterResponse.Accept and len(room_filter.alphabets):
+            for lang, pattern in self.alphabet_filter_patterns:
+                # Lookup each regex pattern for this language and verify the message
+                if lang not in room_filter.alphabets:
+                    continue
+                if not pattern.search(msg.text):
+                    continue
 
-        alpha_result = FilterResponse.Accept
-        for lang, pattern in self.alphabet_filter_patterns:
-            if lang not in settings['alphabet_filters']:
-                continue
+                # Filter the language string
+                reply_settings = self.get_reply_settings(room_token, filter_type=FilterType.Alphabet, filter_lang=lang)
+                if reply_settings:
+                    print(f"replying with format: {reply_settings}")
+                    _ = self.reply(room_name       = req.room_name,
+                                   room_token      = req.room_token,
+                                   user_session_id = req.session_id,
+                                   username        = typing.cast(str, msg.username),
+                                   reply_settings  = reply_settings,)
+                result = FilterResponse.Silent if room_filter.alphabet_silent else FilterResponse.Reject
+                break
 
-            if not pattern.search(msg.text):
-                continue
-
-            # Filter it!
-            filter_type, filter_lang = 'alphabet', lang
-            reply_settings = self.get_reply_settings(
-                request[b"room_token"], filter_type=filter_type, filter_lang=filter_lang
-            )
-            if reply_settings:
-                print(f"replying with format: {reply_settings}")
-                self.reply(
-                    request[b"room_name"],
-                    request[b"room_token"],
-                    bytes.fromhex(request[b"session_id"].decode()),
-                    request[b"message_data"],
-                    msg.username,
-                    reply_settings=reply_settings,
-                )
-
-            alpha_result = (
-                FilterResponse.Reject if settings['alphabet_silent'] else FilterResponse.Reject
-            )
-
-            break
-
-        if alpha_result == FilterResponse.Reject or prof_result == FilterResponse.Reject:
-            # Example of re-injecting the message later if some other approval process succeeds:
-            # msg_id = self.inject_message(room_token, user_session_id, message_data, sig, whisper_target = whisper_target, whisper_mods = whisper_mods)
-            return FilterResponse.Reject
-        elif alpha_result == FilterResponse.Silent or prof_result == FilterResponse.Silent:
-            return FilterResponse.Silent
-
-        return FilterResponse.Accept
+        return result

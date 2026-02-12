@@ -34,14 +34,22 @@ class ReplySettings:
                        the reply, the following python placeholders are supported:
                        {profile_name}, {profile_at}, {room_name}, {room_token}.
 
-                       e.g. reply_format_str = "Hey {profile_name}! No swearing here in {room_name}"
+                       e.g. reply_format_str = "Hey {profile_name}! No swearing in {room_name}."
 
         profile_name:  Display name for the reply
         public:        If True the reply is posted publicly; if False it is whispered to the user.
     """
-    reply_formats: List[str] = dataclasses.field(default_factory=list)
-    profile_name:  str       = 'SOGS'
-    public:        bool      = False
+    reply_formats: List[str]      = dataclasses.field(default_factory=list)
+    profile_name:  Optional[str]  = 'SOGS'
+    public:        Optional[bool] = False
+
+    def load_from(self, other: "ReplySettings"):
+        if len(other.reply_formats):
+            self.reply_formats = other.reply_formats
+        if other.profile_name:
+            self.profile_name = other.profile_name
+        if other.public:
+            self.public = other.public
 
 @dataclasses.dataclass
 class RoomReadRequest:
@@ -457,14 +465,7 @@ class Plugin:
         """
         return FilterResponse.Accept
 
-    def reply(
-        self,
-        room_name:       bytes,
-        room_token:      bytes,
-        user_session_id: SessionID,
-        username:        Optional[str],
-        reply_settings:  ReplySettings,
-    ) -> Optional[MessageID]:
+    def reply(self, room_name: str, room_token: bytes, user_session_id: SessionID, username: Optional[str], reply_settings:  ReplySettings,) -> Optional[MessageID]:
         """Call this from your filter() override when you want to reply to a user message, e.g.
         "hey no swearing here"
         """

@@ -11,10 +11,11 @@ from typing import Dict, List, Union, Optional
 # e.g.
 #   OMQ Session ID response => b"15aaaa.."       (66 bytes)
 #   `SessionID`             => b"\x15\xaa\xaa.." (33 bytes)
-SessionID  = bytes
-RoomToken  = bytes
-TimestampS = float
-MessageID  = int
+SessionID    = bytes
+RoomToken    = bytes
+RoomTokenStr = str
+TimestampS   = float
+MessageID    = int
 
 # Represents the different variants of data types that a primitive bencoded type can hold. These
 # values are produced and consumed by the module oxenc's bt_serialize/bt_deserialize functions.
