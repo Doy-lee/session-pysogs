@@ -1,4 +1,4 @@
-"""SOGS Content Filter Plugin
+"""SOGS Filter Plugin
 
   This plugin provides message filtering for profanity and non-Latin alphabets (Persian, Arabic,
   Cyrillic). When enabled, it can automatically reject messages or reply to users with warnings
@@ -9,31 +9,59 @@
   different filter types (profanity vs alphabet violations).
 
 Getting Started:
-  The plugin automatically loads configuration from the SOGS global config (sogs.ini). Enable
-  filtering by setting the following in your sogs.ini:
+  Setup the .ini config (see the configuration section below for more details) with the desired
+  parameters and then you can run the plugin standalone
 
-    [messages]
-    profanity_filter = true
-    profanity_silent = false
-    alphabet_filters = persian, arabic, cyrillic
-    alphabet_silent = false
-    filter_mods = false
+    cd session-pysogs
+    python3 -m sogs.plugins.sogs_filter --plugin_sogs_filter_ini_path <path/to/plugin/config.ini>
 
-  The plugin runs automatically when SOGS starts. No manual registration is required as it
-  inherits settings from the legacy SOGS filtering configuration.
+  Alternatively you can run the plugin alongside the SOGS server as a UWSGI mule. In your UWSGI .ini
+  config file, add to the [uwsgi] section:
+
+    [uwsgi]
+    mule = sogs.plugins.emoji_captcha
+    env  = PLUGIN_SOGS_FILTER_INI_PATH=<path/to/plugin/config.ini>
+
+  Note that the plugin can be parameterized via the following methods:
+
+    - Pass the `--plugin_sogs_filter_ini_path` flag to the python invocation
+    - Set the PLUGIN_SOGS_FILTER_INI_PATH environment variable
+    - Otherwise expects "sogs_filter.ini" in the current working directory if omitted
+
+  Start the plugin via UWSGI or directly and after it has initialised the plugin will generate a
+  Ed25519 keypair and output this information on startup, e.g.:
+
+    [SOGS FILTER] Plugin initialised:
+      SOGS Address (Pubkey):      tcp://127.0.0.1:22028 (cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc)
+      Display Name:               SOGS Filter Plugin
+      Ed25519 Pubkey:             aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      X25519 Pubkey:              bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      Session Account (Blind-15): 15xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+  The Ed25519 public key must be registered to the SOGS instance to enable the plugin to establish
+  a connection to the SOGS server, authenticate and consequently receive messages from SOGS to react
+  to. The plugin can be registered by invoking on the SOGS instance:
+
+    python3 -m sogs --add-plugin       <ed25519 pubkey hex 64 chars> \
+                    --plugin-name      'SOGS Filter Plugin' \
+                    --plugin-global    true \
+                    --plugin-approver  true \
+                    --plugin-required  true \
+                    --plugin-subscribe true
 
   Example filter reply configuration:
 
-    [filter:*:*]
-    reply = "Please keep it clean in {room_name}!"
+    [plugin_sogs_filter.room.*.reply.*]
+    reply_format = Please keep it clean in {room_name}!
+    reply_format = Warning: Inappropriate content detected!
     profile_name = Filter Bot
-    public = false
+    public       = false
 
-    [filter:profanity:*]
-    reply = "No profanity allowed!"
+    [plugin_sogs_filter.room.*.reply.profanity]
+    reply_format = No profanity allowed!
 
-    [filter:alphabet:myroom]
-    reply = "Only Latin characters are supported here."
+    [plugin_sogs_filter.room.myroom.reply.alphabet]
+    reply_format = Only Latin characters are supported here.
 
 Architecture:
   - Integrates with SOGS as a plugin via the Plugin base class
@@ -44,28 +72,70 @@ Architecture:
   - Maintains filter state per-room with settings inheritance from global config
 
 Config file (.ini):
-  The plugin reads from the main SOGS configuration file. Key settings:
+  Configure how the Emoji CAPTCHA plugin's behaviour and how it connects to the SOGS server by
+  adding the following fields into the .ini file. This can be in your SOGS .ini file or a separate
+  .ini file if you wish.
 
-    profanity_filter: Enable/disable profanity checking (default: false)
-    profanity_silent: If true, silently reject; if false, send reply (default: true)
-    alphabet_filters: Comma-separated list of alphabets to filter (default: empty)
-                      Options: persian, arabic, cyrillic
-    alphabet_silent:  If true, silently reject alphabet violations (default: true)
-    filter_mods:      If true, also filter moderator messages (default: false)
+  This plugin has top-level settings to be configured in `[plugin_sogs_filter]`. Additionally you
+  can configure the filter specifically for a room and what the plugin should reply when a message is
+  filtered.
 
-  Filter-specific replies are configured in [filter:<type>:<room>] sections:
+    [plugin_sogs_filter.room.<token>]
+    ...
 
-    [filter:*:*]           # Global default replies
-    [filter:profanity:*]   # Profanity-specific replies
-    [filter:alphabet:*]    # General alphabet filter replies
-    [filter:persian:*]     # Language-specific replies
+    [plugin_sogs_filter.room.<token>.reply.<category>]
+    ...
 
-  Reply configuration fields:
-    reply:          Newline-separated list of reply messages (one chosen randomly)
-    profile_name:   Display name for the reply bot (default: SOGS)
-    public:         If true, reply publicly; if false, whisper (default: false)
+  See the example as follows:
 
-  Reply format placeholders:
+```ini
+[plugin]
+; sogs_address    = tcp://127.0.0.1:22028
+; sogs_pubkey_hex = xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+;
+
+[plugin_sogs_filter]
+; name             = SOGS Filter Plugin
+; key_file         = plugin_sogs_filter_ed25519
+
+; If true, also filter moderator messages or otherwise moderator messages are always accepted
+; filter_mods      = false
+
+[plugin_sogs_filter.room.*]
+; Enable profanity detection of messages posted into the room specified by <token>
+; profanity        = false
+
+; If true, silently reject messages that trigger the profanity filter, if false, reply with warning
+; profanity_silent = false
+
+; Extra alphabets to filter, each extra filter should be specified one per line
+; alphabets        = spanish
+; alphabets        = custom_language_filter
+
+; If true, silently reject alphabet violations that trigger one of the alphabet filters, if false
+; reply with warning
+; alphabet_silent  = false
+
+[plugin_sogs_filter.room.*.reply.*]
+; Reply message (can specify multiple times for random selection)
+; reply_format     = Hey {profile_name}! No swearing in {room_name}.
+
+; Display name that the reply sent on a filtered message will have
+; profile_name     = SOGS
+
+; If true, reply publicly; if false, whisper to the user that triggered the filter
+; public           = false
+```
+
+  The category in reply sections can be one of the following reserved values:
+    *          - Universal/default replies (lowest precedence)
+    profanity  - Profanity-specific replies
+    alphabet   - General alphabet filter replies
+
+  Or any arbitrary category with a custom filter
+    <category> - Arbitrary category-specific replies (e.g., persian, arabic, cyrillic, my_custom_filter)
+
+  The reply format can access the following values in the message replied to the user:
     {profile_name}  - User's display name or Session ID
     {profile_at}    - @mention of the user
     {room_name}     - Name of the room
@@ -79,7 +149,11 @@ import sogs.types
 import dataclasses
 import enum
 import copy
+import sogs.plugin
+import os
+import configparser
 
+from collections import OrderedDict
 from typing import Optional, Dict, List, Tuple, Set, Union
 from sogs.plugin import Plugin, ReplySettings, FilterResponse
 from sogs.model.post import Post
@@ -99,7 +173,7 @@ class Filter:
         alphabet_silent:        If True, silently reject alphabet violations; if False, reply
         universal_reply:        Default reply settings for any filter trigger (lowest precedence)
         profanity_reply:        Reply settings specifically for profanity violations
-        alphabet_default_reply: Reply settings for general alphabet filter triggers
+        alphabet_reply:         Reply settings for general alphabet filter triggers
         alphabet_other_replies: Language-specific reply settings (e.g., {'persian': ReplySettings()})
     """
 
@@ -109,11 +183,11 @@ class Filter:
     alphabet_silent:        bool                     = False
     universal_reply:        Optional[ReplySettings]  = None
     profanity_reply:        Optional[ReplySettings]  = None
-    alphabet_default_reply: Optional[ReplySettings]  = None
+    alphabet_reply:         Optional[ReplySettings]  = None
     alphabet_other_replies: Dict[str, ReplySettings] = dataclasses.field(default_factory=dict)
 
 @dataclasses.dataclass
-class SogsFilterPlugin(Plugin):
+class SOGSFilterPlugin(Plugin):
     """SOGS message filter plugin for profanity and alphabet detection.
 
     Automatically loads configuration from SOGS global config and supports per-room overrides.
@@ -128,18 +202,18 @@ class SogsFilterPlugin(Plugin):
     """
 
     filter_mods:  bool                                  = False
-    rooms:        Dict[sogs.types.RoomTokenStr, Filter] = {}
+    rooms:        Dict[sogs.types.RoomTokenStr, Filter] = dataclasses.field(default_factory=dict)
 
     # NOTE: Character ranges for different alphabet filters.
     # This is ordered because some are subsets of each other (e.g. persian is a subset of the
     # arabic character range). We check more specific patterns first before falling back to
     # broader categories.
-    alphabet_filter_patterns: List[Tuple[str, re.Pattern]] = [
+    alphabet_filter_patterns: List[Tuple[str, re.Pattern]] = dataclasses.field(default_factory=lambda: [
         ('persian',  re.compile(r'[\u0621-\u0628\u062a-\u063a\u0641-\u0642\u0644-\u0648\u064e-\u0651\u0655\u067e\u0686\u0698\u06a9\u06af\u06be\u06cc]')),
         ('arabic',   re.compile(r'[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff\ufb50-\ufdff\ufe70-\ufefe]')),
         ('cyrillic', re.compile(r'[\u0400-\u04ff]')),
         ('debug',    re.compile(r'debug alphabet test')),
-    ]
+    ])
 
     def __post_init__(self):
         # Legacy path: import deprecated filtering settings from config.py
@@ -182,8 +256,8 @@ class SogsFilterPlugin(Plugin):
                         self.rooms[room].profanity_reply = ReplySettings()
                         reply_dest                       = self.rooms[room].profanity_reply
                     elif room_category == 'alphabet':
-                        self.rooms[room].alphabet_default_reply = ReplySettings()
-                        reply_dest                              = self.rooms[room].alphabet_default_reply
+                        self.rooms[room].alphabet_reply = ReplySettings()
+                        reply_dest                              = self.rooms[room].alphabet_reply
                     else:
                         self.rooms[room].alphabet_other_replies[room_category] = ReplySettings()
                         reply_dest                                             = self.rooms[room].alphabet_other_replies[room_category]
@@ -240,8 +314,8 @@ class SogsFilterPlugin(Plugin):
                     result.load_from(room_filter.profanity_reply)
 
             if filter_type == FilterType.Alphabet:
-                if room_filter.alphabet_default_reply:
-                    result.load_from(room_filter.alphabet_default_reply)
+                if room_filter.alphabet_reply:
+                    result.load_from(room_filter.alphabet_reply)
 
             # Or use the language filters if it was specified
             if filter_lang:
@@ -318,3 +392,164 @@ class SogsFilterPlugin(Plugin):
                 break
 
         return result
+
+def entry_point():
+    import argparse
+
+    # Custom dict that accumulates duplicate keys into a list
+    class MultiValueDict(OrderedDict):
+        """Dictionary that accumulates duplicate 'reply_format' and 'alphabets' keys into lists."""
+        _accumulate_keys = {'reply_format', 'alphabets'}
+        
+        def __setitem__(self, key, value):
+            if key in self._accumulate_keys and key in self:
+                if not isinstance(self[key], list):
+                    self[key] = [self[key]]
+                self[key].append(value)
+            else:
+                super().__setitem__(key, value)
+
+    # Argument parser
+    parser = argparse.ArgumentParser(description='SOGS Filter')
+    _ = parser.add_argument('--plugin_sogs_filter_ini_path', type=str,
+                            default=os.environ.get('PLUGIN_SOGS_FILTER_INI_PATH', 'sogs_filter.ini'),
+                            help='Path to the configuration .ini file (default: sogs_filter.ini or set PLUGIN_SOGS_FILTER_INI_PATH env)')
+    args     = parser.parse_args()
+    ini_file = typing.cast(str, args.plugin_sogs_filter_ini_path)
+
+    # Setup logger
+    sogs.plugin.log.name = '[SOGS FILTER]'
+    sogs.plugin.log.addHandler(sogs.plugin.console_log_handler)
+
+    # Load custom INI with support for multiple reply_format keys
+    sogs.plugin.log.info(f"Loading SOGS Filter plugin config from {ini_file}")
+
+    try:
+        # Use custom parser that accumulates duplicate reply_format keys
+        ini_parser = configparser.ConfigParser(dict_type=MultiValueDict, strict=False)
+        ini_parser.read(ini_file)
+
+        # Get plugin config from [plugin] section (standard fields)
+        sogs_address = ini_parser.get('plugin', 'sogs_address', fallback='tcp://127.0.0.1:22028')
+        sogs_pubkey_hex = ini_parser.get('plugin', 'sogs_pubkey_hex', fallback='')
+        sogs_pubkey = bytes.fromhex(sogs_pubkey_hex) if sogs_pubkey_hex else b''
+
+        # Get filter-specific config from [plugin_sogs_filter] section
+        key_file = ini_parser.get('plugin_sogs_filter', 'key_file', fallback="plugin_sogs_filter_ed25519")
+        display_name = ini_parser.get('plugin_sogs_filter', 'display_name', fallback="SOGS Filter Plugin")
+        filter_mods = ini_parser.getboolean('plugin_sogs_filter', 'filter_mods', fallback=False)
+
+        ed_privkey = sogs.plugin.Plugin.get_or_make_ed25519_privkey(key_file)
+
+        # Parse room-specific settings from [plugin_sogs_filter.room.<token>] sections
+        rooms: Dict[str, Filter] = {}
+
+        for section in ini_parser.sections():
+            if not section.startswith('plugin_sogs_filter.'):
+                continue
+
+            parts = section.split('.')
+
+            # FATAL: Wrong prefix structure
+            if len(parts) < 3:
+                raise ValueError(f"Section '{section}' has too few components. Expected format: 'plugin_sogs_filter.room.<token>'")
+
+            if parts[0] != 'plugin_sogs_filter':
+                continue  # Not our plugin
+
+            if parts[1] != 'room':
+                raise ValueError(f"Invalid section '{section}': expected 'room' after plugin prefix, got '{parts[1]}'")
+
+            # FATAL: Missing room token
+            if len(parts) < 4:
+                raise ValueError(f"Section '{section}' is missing room token. Expected format: 'plugin_sogs_filter.room.<token>'")
+
+            room_token = parts[3]
+            if not room_token:
+                raise ValueError(f"Section '{section}' has empty room token")
+
+            # Base room settings: plugin_sogs_filter.room.<token>
+            if len(parts) == 4:
+                if room_token not in rooms:
+                    rooms[room_token] = Filter()
+
+                # Parse boolean flags
+                if ini_parser.has_option(section, 'profanity'):
+                    rooms[room_token].profanity = ini_parser.getboolean(section, 'profanity')
+                if ini_parser.has_option(section, 'profanity_silent'):
+                    rooms[room_token].profanity_silent = ini_parser.getboolean(section, 'profanity_silent')
+                if ini_parser.has_option(section, 'alphabet_silent'):
+                    rooms[room_token].alphabet_silent = ini_parser.getboolean(section, 'alphabet_silent')
+                if ini_parser.has_option(section, 'alphabets'):
+                    alphabets_value = ini_parser.get(section, 'alphabets')
+                    # Must use multiple keys pattern - one alphabet per line
+                    if isinstance(alphabets_value, list):
+                        rooms[room_token].alphabets = {s.strip() for s in alphabets_value if s.strip()}
+                    elif alphabets_value:
+                        rooms[room_token].alphabets = {alphabets_value.strip()}
+
+            # Reply settings: plugin_sogs_filter.room.<token>.reply.<category>
+            elif len(parts) == 6:
+                if parts[4] != 'reply':
+                    raise ValueError(f"Invalid section '{section}': expected 'reply' in position 5, got '{parts[4]}'")
+
+                category = parts[5]
+                if not category:
+                    raise ValueError(f"Section '{section}' has empty category. Expected format: 'plugin_sogs_filter.room.<token>.reply.<category>'")
+
+                if room_token not in rooms:
+                    rooms[room_token] = Filter()
+
+                # Get accumulated reply formats (each reply_format key = one message)
+                reply_formats: List[str] = []
+                if ini_parser.has_option(section, 'reply_format'):
+                    value = ini_parser.get(section, 'reply_format')
+                    if isinstance(value, list):
+                        reply_formats = value
+                    elif value:
+                        reply_formats = [value]
+
+                # Skip if no reply formats defined (empty reply section is allowed)
+                if not reply_formats:
+                    continue
+
+                profile_name = ini_parser.get(section, 'profile_name', fallback='SOGS')
+                public = ini_parser.getboolean(section, 'public', fallback=False)
+
+                reply_settings = ReplySettings(
+                    reply_formats=reply_formats,
+                    profile_name=profile_name,
+                    public=public
+                )
+
+                # Assign to appropriate field based on category (any category is valid)
+                if category == '*':
+                    rooms[room_token].universal_reply = reply_settings
+                elif category == 'profanity':
+                    rooms[room_token].profanity_reply = reply_settings
+                elif category == 'alphabet':
+                    rooms[room_token].alphabet_reply = reply_settings
+                else:
+                    rooms[room_token].alphabet_other_replies[category] = reply_settings
+
+            # FATAL: Wrong number of parts
+            else:
+                raise ValueError(f"Invalid section '{section}': unexpected structure. Expected 4 parts (room settings) or 6 parts (reply settings), got {len(parts)}")
+
+        # Instantiate plugin
+        plugin = SOGSFilterPlugin(
+            sogs_address=sogs_address,
+            sogs_pubkey=sogs_pubkey,
+            ed_privkey=ed_privkey,
+            display_name=display_name
+        )
+        plugin.filter_mods = filter_mods
+        plugin.rooms.update(rooms)
+
+        plugin.run()
+
+    except Exception as e:
+        sogs.plugin.log.error(f"Exception raised in plugin. Terminating:\n{e}")
+
+if __name__ == "__main__":
+    entry_point()
