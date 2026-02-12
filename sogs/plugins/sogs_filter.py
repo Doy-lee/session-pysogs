@@ -1,3 +1,77 @@
+"""SOGS Content Filter Plugin
+
+  This plugin provides message filtering for profanity and non-Latin alphabets (Persian, Arabic,
+  Cyrillic). When enabled, it can automatically reject messages or reply to users with warnings
+  when filtered content is detected.
+
+  The plugin supports per-room configuration overrides and can be configured to filter moderator
+  messages or exempt them. Filter responses can be customized with different reply messages for
+  different filter types (profanity vs alphabet violations).
+
+Getting Started:
+  The plugin automatically loads configuration from the SOGS global config (sogs.ini). Enable
+  filtering by setting the following in your sogs.ini:
+
+    [messages]
+    profanity_filter = true
+    profanity_silent = false
+    alphabet_filters = persian, arabic, cyrillic
+    alphabet_silent = false
+    filter_mods = false
+
+  The plugin runs automatically when SOGS starts. No manual registration is required as it
+  inherits settings from the legacy SOGS filtering configuration.
+
+  Example filter reply configuration:
+
+    [filter:*:*]
+    reply = "Please keep it clean in {room_name}!"
+    profile_name = Filter Bot
+    public = false
+
+    [filter:profanity:*]
+    reply = "No profanity allowed!"
+
+    [filter:alphabet:myroom]
+    reply = "Only Latin characters are supported here."
+
+Architecture:
+  - Integrates with SOGS as a plugin via the Plugin base class
+  - Overrides filter() to intercept and validate all room messages
+  - Uses better_profanity library for profanity detection
+  - Uses regex patterns for alphabet/script detection
+  - Supports hierarchical reply configuration (global -> room -> filter type -> language)
+  - Maintains filter state per-room with settings inheritance from global config
+
+Config file (.ini):
+  The plugin reads from the main SOGS configuration file. Key settings:
+
+    profanity_filter: Enable/disable profanity checking (default: false)
+    profanity_silent: If true, silently reject; if false, send reply (default: true)
+    alphabet_filters: Comma-separated list of alphabets to filter (default: empty)
+                      Options: persian, arabic, cyrillic
+    alphabet_silent:  If true, silently reject alphabet violations (default: true)
+    filter_mods:      If true, also filter moderator messages (default: false)
+
+  Filter-specific replies are configured in [filter:<type>:<room>] sections:
+
+    [filter:*:*]           # Global default replies
+    [filter:profanity:*]   # Profanity-specific replies
+    [filter:alphabet:*]    # General alphabet filter replies
+    [filter:persian:*]     # Language-specific replies
+
+  Reply configuration fields:
+    reply:          Newline-separated list of reply messages (one chosen randomly)
+    profile_name:   Display name for the reply bot (default: SOGS)
+    public:         If true, reply publicly; if false, whisper (default: false)
+
+  Reply format placeholders:
+    {profile_name}  - User's display name or Session ID
+    {profile_at}    - @mention of the user
+    {room_name}     - Name of the room
+    {room_token}    - Token of the room
+"""
+
 import re
 import typing
 import typing_extensions
@@ -16,9 +90,22 @@ class FilterType(enum.Enum):
 
 @dataclasses.dataclass
 class Filter:
+    """Per-room filter configuration holding boolean flags and reply settings.
+
+    Attributes:
+        profanity:              Enable profanity detection for this room
+        profanity_silent:       If True, silently reject profanity; if False, reply with warning
+        alphabets:              Set of alphabet names to filter (e.g., {'persian', 'arabic'})
+        alphabet_silent:        If True, silently reject alphabet violations; if False, reply
+        universal_reply:        Default reply settings for any filter trigger (lowest precedence)
+        profanity_reply:        Reply settings specifically for profanity violations
+        alphabet_default_reply: Reply settings for general alphabet filter triggers
+        alphabet_other_replies: Language-specific reply settings (e.g., {'persian': ReplySettings()})
+    """
+
     profanity:              bool                     = False
     profanity_silent:       bool                     = False
-    alphabets:              Set[str]                 = dataclasses.field(default_factory=set) # e.g.: 'persian', 'arabic', 'cyrillic'
+    alphabets:              Set[str]                 = dataclasses.field(default_factory=set)
     alphabet_silent:        bool                     = False
     universal_reply:        Optional[ReplySettings]  = None
     profanity_reply:        Optional[ReplySettings]  = None
@@ -27,16 +114,26 @@ class Filter:
 
 @dataclasses.dataclass
 class SogsFilterPlugin(Plugin):
-    """
-    Handles profanity filtering and alphabet detection/direction (replacing the functionality which
-    was previously built into SOGS directly).
+    """SOGS message filter plugin for profanity and alphabet detection.
+
+    Automatically loads configuration from SOGS global config and supports per-room overrides.
+
+    Attributes:
+        filter_mods:              If True, moderator messages are also filtered; if False, mods bypass
+        rooms:                    Dictionary mapping room tokens to their Filter configuration.
+                                  '*' key holds global defaults, specific room tokens hold overrides
+        alphabet_filter_patterns: Ordered list of (language_name, regex_pattern) tuples for alphabet
+                                  detection. Ordered so specific languages (e.g., persian) are checked
+                                  before broader categories (e.g., arabic) that contain them
     """
 
     filter_mods:  bool                                  = False
     rooms:        Dict[sogs.types.RoomTokenStr, Filter] = {}
 
-    # Character ranges for different filters.  This is ordered because some are subsets of each other
-    # (e.g. persian is a subset of the arabic character range).
+    # NOTE: Character ranges for different alphabet filters.
+    # This is ordered because some are subsets of each other (e.g. persian is a subset of the
+    # arabic character range). We check more specific patterns first before falling back to
+    # broader categories.
     alphabet_filter_patterns: List[Tuple[str, re.Pattern]] = [
         ('persian',  re.compile(r'[\u0621-\u0628\u062a-\u063a\u0641-\u0642\u0644-\u0648\u064e-\u0651\u0655\u067e\u0686\u0698\u06a9\u06af\u06be\u06cc]')),
         ('arabic',   re.compile(r'[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff\ufb50-\ufdff\ufe70-\ufefe]')),
