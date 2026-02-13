@@ -84,18 +84,20 @@ def entry_point(ini_path: str = 'slash_test.ini'):
 
     # Load common INI configuration
     sogs.plugin.log.info(f"Loading Slash Test plugin config from {ini_path}")
-    config: sogs.plugin.PluginConfigFromINI = Plugin.load_ini_from_path(ini_path)
+    config: sogs.plugin.PluginConfigFromINI = sogs.plugin.Plugin.load_ini_from_path(ini_path=ini_path, default_display_name='Slash Test Plugin')
     if not config.success:
         return
 
     # Plugin specific fields from INI
-    key_file:     str   = config.ini.get('plugin_slash_test', 'key_file',     fallback="slash_test_ed25519")
-    display_name: str   = config.ini.get('plugin_slash_test', 'display_name', fallback="Slash Test Plugin")
-    ed_privkey:   bytes = Plugin.get_or_make_ed25519_privkey(key_file)
+    key_file:   str   = config.ini.get('plugin_slash_test', 'key_file', fallback="slash_test_ed25519")
+    ed_privkey: bytes = Plugin.get_or_make_ed25519_privkey(key_file)
 
     try:
         # Instantiate the plugin
-        plugin = SlashTestPlugin(sogs_address=config.sogs_address, sogs_pubkey=config.sogs_pubkey, ed_privkey=ed_privkey, display_name=display_name)
+        plugin = SlashTestPlugin(sogs_address = config.sogs_address,
+                                 sogs_pubkey  = config.sogs_pubkey,
+                                 ed_privkey   = ed_privkey,
+                                 display_name = config.display_name)
         plugin.run()
     except Exception as e:
         sogs.plugin.log.error(f"Exception raised in plugin. Terminating:\n{e}")

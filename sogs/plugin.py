@@ -152,6 +152,7 @@ class PluginConfigFromINI:
     success:      bool                      = False
     sogs_address: str                       = ''
     sogs_pubkey:  bytes                     = b''
+    display_name: str                       = ''
 
 @dataclasses.dataclass
 class Plugin:
@@ -183,7 +184,7 @@ class Plugin:
     omq:                  oxenmq.OxenMQ       = dataclasses.field(init=False)
 
     @staticmethod
-    def load_ini_from_path(ini_path: str) -> PluginConfigFromINI:
+    def load_ini_from_path(ini_path: str, default_display_name: Optional[str] = None) -> PluginConfigFromINI:
         from sogs import config as sogs_config
 
         # Setup and load config file from disk
@@ -212,7 +213,17 @@ class Plugin:
             log.error(f"Config file field 'sogs_pubkey_hex' was not a valid hex string: {sogs_pubkey_hex}")
             return PluginConfigFromINI()
 
-        result = PluginConfigFromINI(ini=parsed_ini, success=True, sogs_address=sogs_address, sogs_pubkey=sogs_pubkey)
+        display_name = ''
+        if default_display_name:
+            display_name = default_display_name
+        else:
+            display_name = parsed_ini.get('plugin', 'display_name', fallback=f"{sogs_pubkey_hex[:4]}..{sogs_pubkey_hex[:-4]}")
+
+        result = PluginConfigFromINI(ini          = parsed_ini,
+                                     success      = True,
+                                     sogs_address = sogs_address,
+                                     sogs_pubkey  = sogs_pubkey,
+                                     display_name = display_name)
         return result
 
     @staticmethod

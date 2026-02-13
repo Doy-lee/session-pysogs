@@ -916,13 +916,12 @@ def entry_point(ini_file: str = 'emoji_captcha.ini'):
 
     # Load common INI configuration
     sogs.plugin.log.info(f"Loading Emoji CAPTCHA plugin config from {ini_file}")
-    config: sogs.plugin.PluginConfigFromINI = sogs.plugin.Plugin.load_ini_from_path(ini_file)
+    config: sogs.plugin.PluginConfigFromINI = sogs.plugin.Plugin.load_ini_from_path(ini_file, default_display_name='Emoji CAPTCHA Plugin')
     if not config.success:
         return
 
     # Plugin specific fields from INI
     key_file:          str           = config.ini.get('plugin_emoji_captcha',    'key_file',              fallback="plugin_emoji_captcha_ed25519")
-    display_name:      str           = config.ini.get('plugin_emoji_captcha',    'display_name',          fallback="Emoji CAPTCHA Plugin")
     retry_limit:       Optional[int] = config.ini.getint('plugin_emoji_captcha', 'retry_limit',           fallback=None)
     retry_timeout_s:   Optional[int] = config.ini.getint('plugin_emoji_captcha', 'retry_timeout_s',       fallback=None)
     refresh_timeout_s: Optional[int] = config.ini.getint('plugin_emoji_captcha', 'refresh_timeout_s',     fallback=None)
@@ -957,7 +956,7 @@ def entry_point(ini_file: str = 'emoji_captcha.ini'):
 
     try:
         # Instantiate the plugin and configure extra fields in the plugin
-        plugin                   = EmojiCaptchaPlugin(sogs_address=config.sogs_address, sogs_pubkey=config.sogs_pubkey, ed_privkey=ed_privkey, display_name=display_name)
+        plugin                   = EmojiCaptchaPlugin(sogs_address=config.sogs_address, sogs_pubkey=config.sogs_pubkey, ed_privkey=ed_privkey, display_name=config.display_name)
         plugin.retry_limit       = retry_limit       or plugin.retry_limit
         plugin.retry_timeout_s   = retry_timeout_s   or plugin.retry_timeout_s
         plugin.refresh_timeout_s = refresh_timeout_s or plugin.refresh_timeout_s
