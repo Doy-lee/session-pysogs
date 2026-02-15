@@ -6,6 +6,10 @@ target-version = ['py38']
 include = '\.py$'
 exclude = 'sogs/.*_pb2.py'
 
+[tool.basedpyright]
+pythonVersion = "3.8"
+stubPath = "./stubs"
+
 [build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
