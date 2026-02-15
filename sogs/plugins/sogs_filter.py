@@ -106,6 +106,14 @@ Config file (.ini):
 ; If true, also filter moderator messages or otherwise moderator messages are always accepted
 ; filter_mods      = false
 
+[plugin_sogs_filter.alphabets]
+; Define alphabet filter patterns as key-value pairs: filter_name = regex_pattern
+; Order matters: more specific patterns should come before broader ones (e.g., persian before arabic)
+; persian  = [\u0621-\u0628\u062a-\u063a\u0641-\u0642\u0644-\u0648\u064e-\u0651\u0655\u067e\u0686\u0698\u06a9\u06af\u06be\u06cc]
+; arabic   = [\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff\ufb50-\ufdff\ufe70-\ufefe]
+; cyrillic = [\u0400-\u04ff]
+; debug    = debug alphabet test
+
 [plugin_sogs_filter.room.*]
 ; Enable profanity detection of messages posted into the room specified by <token>
 ; profanity        = false
@@ -113,9 +121,10 @@ Config file (.ini):
 ; If true, silently reject messages that trigger the profanity filter, if false, reply with warning
 ; profanity_silent = false
 
-; Extra alphabets to filter, each extra filter should be specified one per line
-; alphabets        = spanish
-; alphabets        = custom_language_filter
+; Alphabets to filter, each filter should be specified one per line (must match a filter name
+; defined in [plugin_sogs_filter.alphabets])
+; alphabets        = persian
+; alphabets        = arabic
 
 ; If true, silently reject alphabet violations that trigger one of the alphabet filters, if false
 ; reply with warning
@@ -137,7 +146,7 @@ Config file (.ini):
     profanity  - Profanity-specific replies
     alphabet   - General alphabet filter replies
 
-  Or any previously defined filter in the .ini file.
+  Or any filter name defined in the [plugin_sogs_filter.alphabets] section.
 
   The reply format can access the following values in the message replied to the user:
     {profile_name}  - User's display name or Session ID
@@ -208,16 +217,11 @@ class SOGSFilterPlugin(Plugin):
     filter_mods:  bool                                  = False
     rooms:        Dict[sogs.types.RoomTokenStr, RoomFilter] = dataclasses.field(default_factory=dict)
 
-    # NOTE: Character ranges for different alphabet filters.
+    # NOTE: Character ranges for different alphabet filters loaded from the .ini file.
     # This is ordered because some are subsets of each other (e.g. persian is a subset of the
     # arabic character range). We check more specific patterns first before falling back to
-    # broader categories.
-    alphabet_filter_patterns: List[Tuple[str, re.Pattern]] = dataclasses.field(default_factory=lambda: [
-        ('persian',  re.compile(r'[\u0621-\u0628\u062a-\u063a\u0641-\u0642\u0644-\u0648\u064e-\u0651\u0655\u067e\u0686\u0698\u06a9\u06af\u06be\u06cc]')),
-        ('arabic',   re.compile(r'[\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff\ufb50-\ufdff\ufe70-\ufefe]')),
-        ('cyrillic', re.compile(r'[\u0400-\u04ff]')),
-        ('debug',    re.compile(r'debug alphabet test')),
-    ])
+    # broader categories. Configure filters in the [plugin_sogs_filter.filters] section.
+    alphabet_filter_patterns: List[Tuple[str, re.Pattern]] = dataclasses.field(default_factory=list)
 
     def __post_init__(self):
         # Legacy path: import deprecated filtering settings from config.py
@@ -459,94 +463,107 @@ def entry_point():
             if not section.startswith('plugin_sogs_filter.'):
                 continue
 
-            # FATAL: Wrong prefix structure
-            parts = section.split('.')
-            if len(parts) < 3:
-                raise ValueError(f"Section '{section}' has too few components. Expected format: 'plugin_sogs_filter.room.<token>'")
-
-            if parts[1] != 'room':
-                raise ValueError(f"Invalid section '{section}': expected 'room' after plugin prefix, got '{parts[1]}'")
-
-            # FATAL: Missing room token
-            if len(parts) < 4:
-                raise ValueError(f"Section '{section}' is missing room token. Expected format: 'plugin_sogs_filter.room.<token>'")
-
-            room_token = parts[3]
-            if not room_token:
-                raise ValueError(f"Section '{section}' has empty room token")
-
-            # Base room settings: plugin_sogs_filter.room.<token>
-            if len(parts) == 4:
-                if room_token not in rooms:
-                    rooms[room_token] = RoomFilter()
-
-                # Parse boolean flags
-                if ini_parser.has_option(section, 'profanity'):
-                    rooms[room_token].profanity = ini_parser.getboolean(section, 'profanity')
-                if ini_parser.has_option(section, 'profanity_silent'):
-                    rooms[room_token].profanity_silent = ini_parser.getboolean(section, 'profanity_silent')
-                if ini_parser.has_option(section, 'alphabet_silent'):
-                    rooms[room_token].alphabet_silent = ini_parser.getboolean(section, 'alphabet_silent')
-                if ini_parser.has_option(section, 'alphabets'):
-                    alphabets_value = ini_parser.get(section, 'alphabets')
-                    # Must use multiple keys pattern - one alphabet per line
-                    if isinstance(alphabets_value, list):
-                        rooms[room_token].alphabets = {s.strip() for s in alphabets_value if s.strip()}
-                    elif alphabets_value:
-                        rooms[room_token].alphabets = {alphabets_value.strip()}
-
-            # Reply settings: plugin_sogs_filter.room.<token>.reply.<filter_name>
-            elif len(parts) == 6:
-                if parts[4] != 'reply':
-                    raise ValueError(f"Invalid section '{section}': expected 'reply' in position 5, got '{parts[4]}'")
-
-                filter_name: str = parts[5]
-                if not filter_name:
-                    raise ValueError(f"Section '{section}' has an empty filter name. Expected format: 'plugin_sogs_filter.room.<token>.reply.<filter_name>'")
-
-                if room_token not in rooms:
-                    rooms[room_token] = RoomFilter()
-
-                # Get accumulated reply formats (each reply_format key = one message)
-                reply_formats: List[str] = []
-                if ini_parser.has_option(section, 'reply_format'):
-                    value = ini_parser.get(section, 'reply_format')
-                    if isinstance(value, list):
-                        reply_formats = value
-                    elif value:
-                        reply_formats = [value]
-
-                # Skip if no reply formats defined (empty reply section is allowed)
-                if not reply_formats:
-                    continue
-
-                profile_name = ini_parser.get(section, 'profile_name', fallback='SOGS')
-                public       = ini_parser.getboolean(section, 'public', fallback=False)
-
-                reply_settings = ReplySettings(reply_formats = reply_formats,
-                                               profile_name  = profile_name,
-                                               public        = public)
-
-                # Assign to appropriate field based on filter name (any category is valid)
-                if filter_name == '*':
-                    rooms[room_token].universal_reply = reply_settings
-                elif filter_name == 'profanity':
-                    rooms[room_token].profanity_reply = reply_settings
-                elif filter_name == 'alphabet':
-                    rooms[room_token].alphabet_reply = reply_settings
-                else:
-                    rooms[room_token].alphabet_other_replies[filter_name] = reply_settings
-
-            # FATAL: Wrong number of parts
+            if section.startswith('plugin_sogs_filter.alphabets'):
+                # Parse alphabet filter patterns from [plugin_sogs_filter.alphabets] section
+                # Format: filter_name = regex_pattern (one per line)
+                # Order matters: more specific patterns (e.g., persian) should come before broader ones (e.g., arabic)
+                for filter_name in section:
+                    pattern_str = ini_parser.has_option(section, filter_name)
+                    try:
+                        compiled_pattern = re.compile(pattern_str)
+                        alphabet_filter_patterns.append((filter_name, compiled_pattern))
+                    except re.error as e:
+                        raise ValueError(f"Invalid regex pattern for alphabet filter '{filter_name}': {pattern_str}\nError: {e}")
             else:
-                raise ValueError(f"Invalid section '{section}': unexpected structure. Expected 4 parts (room settings) or 6 parts (reply settings), got {len(parts)}")
+                # FATAL: Wrong prefix structure
+                parts = section.split('.')
+                if len(parts) < 3:
+                    raise ValueError(f"Section '{section}' has too few components. Expected format: 'plugin_sogs_filter.room.<token>'")
+
+                if parts[1] != 'room':
+                    raise ValueError(f"Invalid section '{section}': expected 'room' or 'alphabets' after plugin prefix, got '{parts[1]}'")
+
+                # FATAL: Missing room token
+                if len(parts) < 4:
+                    raise ValueError(f"Section '{section}' is missing room token. Expected format: 'plugin_sogs_filter.room.<token>'")
+
+                room_token = parts[3]
+                if not room_token:
+                    raise ValueError(f"Section '{section}' has empty room token")
+
+                # Base room settings: plugin_sogs_filter.room.<token>
+                if len(parts) == 4:
+                    if room_token not in rooms:
+                        rooms[room_token] = RoomFilter()
+
+                    # Parse boolean flags
+                    if ini_parser.has_option(section, 'profanity'):
+                        rooms[room_token].profanity = ini_parser.getboolean(section, 'profanity')
+                    if ini_parser.has_option(section, 'profanity_silent'):
+                        rooms[room_token].profanity_silent = ini_parser.getboolean(section, 'profanity_silent')
+                    if ini_parser.has_option(section, 'alphabet_silent'):
+                        rooms[room_token].alphabet_silent = ini_parser.getboolean(section, 'alphabet_silent')
+                    if ini_parser.has_option(section, 'alphabets'):
+                        alphabets_value = ini_parser.get(section, 'alphabets')
+                        # Must use multiple keys pattern - one alphabet per line
+                        if isinstance(alphabets_value, list):
+                            rooms[room_token].alphabets = {s.strip() for s in alphabets_value if s.strip()}
+                        elif alphabets_value:
+                            rooms[room_token].alphabets = {alphabets_value.strip()}
+
+                # Reply settings: plugin_sogs_filter.room.<token>.reply.<filter_name>
+                elif len(parts) == 6:
+                    if parts[4] != 'reply':
+                        raise ValueError(f"Invalid section '{section}': expected 'reply' in position 5, got '{parts[4]}'")
+
+                    filter_name: str = parts[5]
+                    if not filter_name:
+                        raise ValueError(f"Section '{section}' has an empty filter name. Expected format: 'plugin_sogs_filter.room.<token>.reply.<filter_name>'")
+
+                    if room_token not in rooms:
+                        rooms[room_token] = RoomFilter()
+
+                    # Get accumulated reply formats (each reply_format key = one message)
+                    reply_formats: List[str] = []
+                    if ini_parser.has_option(section, 'reply_format'):
+                        value = ini_parser.get(section, 'reply_format')
+                        if isinstance(value, list):
+                            reply_formats = value
+                        elif value:
+                            reply_formats = [value]
+
+                    # Skip if no reply formats defined (empty reply section is allowed)
+                    if not reply_formats:
+                        continue
+
+                    profile_name = ini_parser.get(section, 'profile_name', fallback='SOGS')
+                    public       = ini_parser.getboolean(section, 'public', fallback=False)
+
+                    reply_settings = ReplySettings(reply_formats = reply_formats,
+                                                   profile_name  = profile_name,
+                                                   public        = public)
+
+                    # Assign to appropriate field based on filter name (any category is valid)
+                    if filter_name == '*':
+                        rooms[room_token].universal_reply = reply_settings
+                    elif filter_name == 'profanity':
+                        rooms[room_token].profanity_reply = reply_settings
+                    elif filter_name == 'alphabet':
+                        rooms[room_token].alphabet_reply = reply_settings
+                    else:
+                        rooms[room_token].alphabet_other_replies[filter_name] = reply_settings
+
+                # FATAL: Wrong number of parts
+                else:
+                    raise ValueError(f"Invalid section '{section}': unexpected structure. Expected 4 parts (room settings) or 6 parts (reply settings), got {len(parts)}")
 
         # Instantiate plugin
         plugin = SOGSFilterPlugin(sogs_address = config.sogs_address,
                                   sogs_pubkey  = config.sogs_pubkey,
                                   ed_privkey   = ed_privkey,
                                   display_name = config.display_name)
-        plugin.filter_mods = filter_mods
+        plugin.filter_mods              = filter_mods
+        plugin.alphabet_filter_patterns = alphabet_filter_patterns
         plugin.rooms.update(rooms)
 
         plugin.run()
