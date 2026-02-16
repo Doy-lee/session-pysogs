@@ -365,7 +365,14 @@ def init_engine(*args, **kwargs):
         preinit()
 
     if not skip_init:
-        database_init()
+        _ = database_init()
+        from . import utils
+        info_lines = utils.pretty_format_key_value_list([
+            ("SOGS Public Key", crypto.server_pubkey_hex),
+            ("Listen Address", config.OMQ_LISTEN),
+            ("Database", config.DB_URL),
+        ])
+        print("\n" + "\n".join(info_lines))
         _fix_plugin_keys(engine.connect())
 
 

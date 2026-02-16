@@ -28,10 +28,10 @@ Getting Started:
     - Set the PLUGIN_SOGS_FILTER_INI_PATH environment variable
     - Otherwise expects "sogs_filter.ini" in the current working directory if omitted
 
-  Start the plugin via UWSGI or directly and after it has initialised the plugin will generate a
+  Start the plugin via UWSGI or directly and after it has loaded the plugin will generate a
   Ed25519 keypair and output this information on startup, e.g.:
 
-    [SOGS FILTER] Plugin initialised:
+    [SOGS FILTER] Plugin loaded:
       SOGS Address (Pubkey):      tcp://127.0.0.1:22028 (cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc)
       Display Name:               SOGS Filter Plugin
       Ed25519 Pubkey:             aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -214,20 +214,28 @@ class SOGSFilterPlugin(Plugin):
                                   before broader categories (e.g., arabic) that contain them
     """
 
-    filter_mods:  bool                                  = False
+    filter_mods:  bool                                      = False
     rooms:        Dict[sogs.types.RoomTokenStr, RoomFilter] = dataclasses.field(default_factory=dict)
 
     # NOTE: Character ranges for different alphabet filters loaded from the .ini file.
     # This is ordered because some are subsets of each other (e.g. persian is a subset of the
     # arabic character range). We check more specific patterns first before falling back to
     # broader categories. Configure filters in the [plugin_sogs_filter.filters] section.
-    alphabet_filter_patterns: List[Tuple[str, re.Pattern]] = dataclasses.field(default_factory=list)
+    alphabet_patterns: List[Tuple[str, re.Pattern[str]]] = dataclasses.field(default_factory=list)
 
     def __post_init__(self):
+        super().__post_init__()
+
+        # NOTE: Create the default room
+        if '*' not in self.rooms:
+            self.rooms['*'] = RoomFilter()
+
         # Legacy path: import deprecated filtering settings from config.py
         if 1:
             import sogs.config
-            self.filter_mods = sogs.config.FILTER_MODS
+            if sogs.config.FILTER_MODS:
+                self.filter_mods = sogs.config.FILTER_MODS
+
             legacy_filter    = RoomFilter(profanity        = sogs.config.PROFANITY_FILTER,
                                           profanity_silent = sogs.config.PROFANITY_SILENT,
                                           alphabets        = sogs.config.ALPHABET_FILTERS,
@@ -299,20 +307,34 @@ class SOGSFilterPlugin(Plugin):
                 if 'alphabet_silent' in ROOM_OVERRIDES[room_token]:
                     self.rooms[room_token].alphabet_silent = typing.cast(bool, ROOM_OVERRIDES[room_token]['alphabet_silent'])
 
-        if '*' not in self.rooms:
-            self.rooms['*'] = RoomFilter()
-
         # NOTE: Print some startup diagnostics
+        alphabet_desc: str = ""
+        for it in self.alphabet_patterns:
+            if len(alphabet_desc) > 100:
+                alphabet_desc += ".."
+                break
+            if len(alphabet_desc):
+                alphabet_desc += ", "
+            alphabet_desc += it[0]
+
+        room_desc: str = ""
+        for it in self.rooms:
+            if len(room_desc) > 100:
+                room_desc += ".."
+                break
+            if len(room_desc):
+                room_desc += ", "
+            room_desc += it[0]
+
         desc_lines: List[Tuple[str, str]] = self.describe_config()
-        default_filter = self.rooms.get('*', RoomFilter())
         desc_lines.extend([
             ("Filter Mods", f"{self.filter_mods}"),
-            ("Profanity/Silent", f"{default_filter.profanity}/{default_filter.profanity_silent}"),
-            ("Alphabets", f"{','.join(default_filter.alphabets) if default_filter.alphabets else 'none'}"),
+            ("Alphabets",   f"({len(self.alphabet_patterns)}) [{alphabet_desc}]"),
+            ("Rooms",       f"({len(self.rooms)}) [{room_desc}]"),
         ])
 
         import sogs.utils
-        log_line: str = "Plugin initialised:\n  " + "\n  ".join(sogs.utils.pretty_format_key_value_list(desc_lines))
+        log_line: str = "Plugin loaded:\n  " + "\n  ".join(sogs.utils.pretty_format_key_value_list(desc_lines))
         sogs.plugin.log.info(log_line)
 
     def get_reply_settings(self, room_token: sogs.types.RoomTokenStr, filter_type: FilterType = FilterType.Profanity, filter_lang: Optional[str] = None) -> Optional[ReplySettings]:
@@ -393,7 +415,7 @@ class SOGSFilterPlugin(Plugin):
 
         # Filter for alphabets
         if result == FilterResponse.Accept and len(room_filter.alphabets):
-            for lang, pattern in self.alphabet_filter_patterns:
+            for lang, pattern in self.alphabet_patterns:
                 # Lookup each regex pattern for this language and verify the message
                 if lang not in room_filter.alphabets:
                     continue
@@ -417,15 +439,10 @@ class SOGSFilterPlugin(Plugin):
 def entry_point():
     import argparse
 
-    # Custom dict that accumulates duplicate keys into a list
-    class MultiValueDict(OrderedDict):
-        """Dictionary that accumulates duplicate 'reply_format' and 'alphabets' keys into lists."""
-        _accumulate_keys = {'reply_format', 'alphabets'}
+    class MultiOrderedDict(OrderedDict):
         def __setitem__(self, key, value):
-            if key in self._accumulate_keys and key in self:
-                if not isinstance(self[key], list):
-                    self[key] = [self[key]]
-                self[key].append(value)
+            if isinstance(value, list) and key in self:
+                self[key].extend(value)
             else:
                 super().__setitem__(key, value)
 
@@ -449,7 +466,7 @@ def entry_point():
 
     try:
         # Use custom parser that accumulates duplicate reply_format keys
-        ini_parser = configparser.ConfigParser(dict_type=MultiValueDict, strict=False)
+        ini_parser = configparser.RawConfigParser(dict_type=MultiOrderedDict, strict=False)
         _          = ini_parser.read(ini_file)
 
         # Get filter-specific config from [plugin_sogs_filter] section
@@ -459,6 +476,7 @@ def entry_point():
 
         # Parse room-specific settings from [plugin_sogs_filter.room.<token>] sections
         rooms: Dict[str, RoomFilter] = {}
+        alphabet_patterns: List[Tuple[str, re.Pattern[str]]] = []
         for section in ini_parser.sections():
             if not section.startswith('plugin_sogs_filter.'):
                 continue
@@ -467,11 +485,11 @@ def entry_point():
                 # Parse alphabet filter patterns from [plugin_sogs_filter.alphabets] section
                 # Format: filter_name = regex_pattern (one per line)
                 # Order matters: more specific patterns (e.g., persian) should come before broader ones (e.g., arabic)
-                for filter_name in section:
-                    pattern_str = ini_parser.has_option(section, filter_name)
+                for filter_name in ini_parser.options(section):
+                    pattern_str = ini_parser.get(section, filter_name)
                     try:
                         compiled_pattern = re.compile(pattern_str)
-                        alphabet_filter_patterns.append((filter_name, compiled_pattern))
+                        alphabet_patterns.append((filter_name, compiled_pattern))
                     except re.error as e:
                         raise ValueError(f"Invalid regex pattern for alphabet filter '{filter_name}': {pattern_str}\nError: {e}")
             else:
@@ -483,16 +501,12 @@ def entry_point():
                 if parts[1] != 'room':
                     raise ValueError(f"Invalid section '{section}': expected 'room' or 'alphabets' after plugin prefix, got '{parts[1]}'")
 
-                # FATAL: Missing room token
-                if len(parts) < 4:
-                    raise ValueError(f"Section '{section}' is missing room token. Expected format: 'plugin_sogs_filter.room.<token>'")
-
-                room_token = parts[3]
-                if not room_token:
+                room_token: str = parts[2]
+                if len(room_token) == 0:
                     raise ValueError(f"Section '{section}' has empty room token")
 
                 # Base room settings: plugin_sogs_filter.room.<token>
-                if len(parts) == 4:
+                if len(parts) == 3:
                     if room_token not in rooms:
                         rooms[room_token] = RoomFilter()
 
@@ -503,69 +517,67 @@ def entry_point():
                         rooms[room_token].profanity_silent = ini_parser.getboolean(section, 'profanity_silent')
                     if ini_parser.has_option(section, 'alphabet_silent'):
                         rooms[room_token].alphabet_silent = ini_parser.getboolean(section, 'alphabet_silent')
+
                     if ini_parser.has_option(section, 'alphabets'):
                         alphabets_value = ini_parser.get(section, 'alphabets')
-                        # Must use multiple keys pattern - one alphabet per line
                         if isinstance(alphabets_value, list):
                             rooms[room_token].alphabets = {s.strip() for s in alphabets_value if s.strip()}
                         elif alphabets_value:
                             rooms[room_token].alphabets = {alphabets_value.strip()}
-
                 # Reply settings: plugin_sogs_filter.room.<token>.reply.<filter_name>
-                elif len(parts) == 6:
-                    if parts[4] != 'reply':
-                        raise ValueError(f"Invalid section '{section}': expected 'reply' in position 5, got '{parts[4]}'")
-
-                    filter_name: str = parts[5]
-                    if not filter_name:
-                        raise ValueError(f"Section '{section}' has an empty filter name. Expected format: 'plugin_sogs_filter.room.<token>.reply.<filter_name>'")
-
-                    if room_token not in rooms:
-                        rooms[room_token] = RoomFilter()
-
-                    # Get accumulated reply formats (each reply_format key = one message)
-                    reply_formats: List[str] = []
-                    if ini_parser.has_option(section, 'reply_format'):
-                        value = ini_parser.get(section, 'reply_format')
-                        if isinstance(value, list):
-                            reply_formats = value
-                        elif value:
-                            reply_formats = [value]
-
-                    # Skip if no reply formats defined (empty reply section is allowed)
-                    if not reply_formats:
-                        continue
-
-                    profile_name = ini_parser.get(section, 'profile_name', fallback='SOGS')
-                    public       = ini_parser.getboolean(section, 'public', fallback=False)
-
-                    reply_settings = ReplySettings(reply_formats = reply_formats,
-                                                   profile_name  = profile_name,
-                                                   public        = public)
-
-                    # Assign to appropriate field based on filter name (any category is valid)
-                    if filter_name == '*':
-                        rooms[room_token].universal_reply = reply_settings
-                    elif filter_name == 'profanity':
-                        rooms[room_token].profanity_reply = reply_settings
-                    elif filter_name == 'alphabet':
-                        rooms[room_token].alphabet_reply = reply_settings
-                    else:
-                        rooms[room_token].alphabet_other_replies[filter_name] = reply_settings
-
-                # FATAL: Wrong number of parts
                 else:
-                    raise ValueError(f"Invalid section '{section}': unexpected structure. Expected 4 parts (room settings) or 6 parts (reply settings), got {len(parts)}")
+                    if len(parts) == 5:
+                        if parts[3] != 'reply':
+                            raise ValueError(f"Invalid section '{section}': expected 'reply' in position 3, got '{parts[3]}'")
+
+                        filter_name: str = parts[4]
+                        if not filter_name:
+                            raise ValueError(f"Section '{section}' has an empty filter name. Expected format: 'plugin_sogs_filter.room.<token>.reply.<filter_name>'")
+
+                        if room_token not in rooms:
+                            rooms[room_token] = RoomFilter()
+
+                        # Get accumulated reply formats (each reply_format key = one message)
+                        reply_formats: List[str] = []
+                        if ini_parser.has_option(section, 'reply_format'):
+                            value = ini_parser.get(section, 'reply_format')
+                            if isinstance(value, list):
+                                reply_formats = value
+                            elif value:
+                                reply_formats = [value]
+
+                        # Skip if no reply formats defined (empty reply section is allowed)
+                        if not reply_formats:
+                            continue
+
+                        profile_name = ini_parser.get(section, 'profile_name', fallback='SOGS')
+                        public       = ini_parser.getboolean(section, 'public', fallback=False)
+
+                        reply_settings = ReplySettings(reply_formats = reply_formats,
+                                                       profile_name  = profile_name,
+                                                       public        = public)
+
+                        # Assign to appropriate field based on filter name (any category is valid)
+                        if filter_name == '*':
+                            rooms[room_token].universal_reply = reply_settings
+                        elif filter_name == 'profanity':
+                            rooms[room_token].profanity_reply = reply_settings
+                        elif filter_name == 'alphabet':
+                            rooms[room_token].alphabet_reply = reply_settings
+                        else:
+                            rooms[room_token].alphabet_other_replies[filter_name] = reply_settings
+
+                    else:
+                        raise ValueError(f"Section '{section}' has unexpected section name. Expected format: 'plugin_sogs_filter.room.<token>.reply.<filter_name>'")
 
         # Instantiate plugin
-        plugin = SOGSFilterPlugin(sogs_address = config.sogs_address,
-                                  sogs_pubkey  = config.sogs_pubkey,
-                                  ed_privkey   = ed_privkey,
-                                  display_name = config.display_name)
-        plugin.filter_mods              = filter_mods
-        plugin.alphabet_filter_patterns = alphabet_filter_patterns
-        plugin.rooms.update(rooms)
-
+        plugin = SOGSFilterPlugin(sogs_address      = config.sogs_address,
+                                  sogs_pubkey       = config.sogs_pubkey,
+                                  ed_privkey        = ed_privkey,
+                                  display_name      = config.display_name,
+                                  filter_mods       = filter_mods,
+                                  alphabet_patterns = alphabet_patterns,
+                                  rooms             = rooms)
         plugin.run()
 
     except Exception as e:

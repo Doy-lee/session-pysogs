@@ -921,12 +921,12 @@ def entry_point(ini_file: str = 'emoji_captcha.ini'):
         return
 
     # Plugin specific fields from INI
-    key_file:          str           = config.ini.get('plugin_emoji_captcha',    'key_file',              fallback="plugin_emoji_captcha_ed25519")
-    retry_limit:       Optional[int] = config.ini.getint('plugin_emoji_captcha', 'retry_limit',           fallback=None)
-    retry_timeout_s:   Optional[int] = config.ini.getint('plugin_emoji_captcha', 'retry_timeout_s',       fallback=None)
-    refresh_timeout_s: Optional[int] = config.ini.getint('plugin_emoji_captcha', 'refresh_timeout_s',     fallback=None)
-    write_timeout_s:   Optional[int] = config.ini.getint('plugin_emoji_captcha', 'write_timeout',         fallback=None)
-    emoji_list_file:   str           = config.ini.get('plugin_emoji_captcha',    'emoji_list_file', fallback="")
+    key_file:          str           = config.ini.get('plugin_emoji_captcha',    'key_file',          fallback="plugin_emoji_captcha_ed25519")
+    retry_limit:       Optional[int] = config.ini.getint('plugin_emoji_captcha', 'retry_limit',       fallback=None)
+    retry_timeout_s:   Optional[int] = config.ini.getint('plugin_emoji_captcha', 'retry_timeout_s',   fallback=None)
+    refresh_timeout_s: Optional[int] = config.ini.getint('plugin_emoji_captcha', 'refresh_timeout_s', fallback=None)
+    write_timeout_s:   Optional[int] = config.ini.getint('plugin_emoji_captcha', 'write_timeout',     fallback=None)
+    emoji_list_file:   str           = config.ini.get('plugin_emoji_captcha',    'emoji_list_file',   fallback="")
     ed_privkey:        bytes         = sogs.plugin.Plugin.get_or_make_ed25519_privkey(key_file)
 
     # Load the emoji list from disk if specified

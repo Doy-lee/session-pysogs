@@ -316,6 +316,8 @@ class Plugin:
                 return
             elif resp == b"REGISTER":
                 self._on_registered_after_hello()
+                connect_str = "reconnected" if self.running else "connected"
+                log.info(f"Plugin '{self.display_name}' (0x{self.ed_pubkey[:2].hex()}..{self.ed_pubkey[-2:].hex()}) {connect_str} to SOGS at {self.sogs_address} (0x{self.sogs_pubkey[:2].hex()}..{self.sogs_pubkey[-2:].hex()}) ✅")
                 self.running = True
                 return
             print(f"Plugin hello error from sogs: {resp}")
@@ -328,18 +330,22 @@ class Plugin:
             self.conn = self.omq.connect_remote(oxenmq.Address(self.sogs_address, self.sogs_pubkey))
         except Exception as e:
             raise RuntimeError((f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
-                                f" ⛔ {e} ⛔\n\n"
-                                f""
-                                f""
-                                f"Check that the SOGS server is contactable at {self.sogs_address} and that the plugin has been registered\n"
-                                f"(authorised) to communicate with the SOGS server. You can register this plugin globally across all-rooms\n"
-                                f"if it hasn't been registered by running this command on your SOGS instance\n\n"
-                                f""
-                                f""
-                                f"  python3 -msogs --add-plugin {self.ed_pubkey.hex()} --plugin-name '{self.display_name}' --plugin-global true --plugin-approver true --plugin-required true --plugin-subscribe true\n\n"
-                                f""
-                                f""
-                                f"See python3 -msogs --help for more information on this invocation.\n"
+                                f"!!\n"
+                                f"!! ⛔ {e} ⛔\n"
+                                f"!!\n"
+                                f"!!  1. Check that `sogs_address` in [plugin] is set to the correct SOGS address and is contactable\n"
+                                f"!!\n"
+                                f"!!       {self.sogs_address}\n"
+                                f"!!\n"
+                                f"!!  2. Check that `sogs_address` in [plugin] is set to the correct SOGS public key\n"
+                                f"!!\n"
+                                f"!!       {self.sogs_pubkey.hex()}\n"
+                                f"!!\n"
+                                f"!!  3. Register the plugin onto SOGS if it hasn't been already. The following command registers globally\n"
+                                f"!!     across all-rooms (see --help for more information on these options)\n"
+                                f"!!\n"
+                                f"!!       python3 -msogs --add-plugin {self.ed_pubkey.hex()} --plugin-name '{self.display_name}' --plugin-global true --plugin-approver true --plugin-required true --plugin-subscribe true\n"
+                                f"!!\n"
                                 f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"))
 
         self.say_hello()

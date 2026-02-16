@@ -1,10 +1,11 @@
 from . import config
 
 import os
+import typing
 from typing import Optional
 
 import nacl
-from nacl.public import PrivateKey
+from nacl.public import PrivateKey, PublicKey
 from nacl.signing import SigningKey, VerifyKey
 from nacl.encoding import Base64Encoder, HexEncoder
 import nacl.bindings as sodium
@@ -57,7 +58,7 @@ else:
 
 _privkey_bytes = _privkey.encode()
 
-server_pubkey = _privkey.public_key
+server_pubkey: PublicKey = _privkey.public_key
 
 server_pubkey_bytes = server_pubkey.encode()
 server_pubkey_hash_bytes = blake2b(server_pubkey_bytes)
