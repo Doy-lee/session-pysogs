@@ -77,19 +77,19 @@ Config file (.ini):
   `my_custom_alphabet` or the `alphabet` filter.
 
     [plugin_sogs_filter.room.*.reply.*] ; Reply message for all rooms for all messages that trigger any filter
-    reply_format = Please keep it clean in {room_name}!
-    reply_format = Warning: Inappropriate content detected!
+    reply = Please keep it clean in \r!
+     Warning: Inappropriate content detected!
     profile_name = Filter Bot
     public       = false
 
     [plugin_sogs_filter.room.*.reply.profanity] ; Reply message for all rooms that trigger a `profanity` filter (overrides the previous section)
-    reply_format = No profanity allowed!
+    reply = No profanity allowed!
 
     [plugin_sogs_filter.room.myroom.reply.alphabet] ; Reply message for `myroom` that triggered an `alphabet` filter (overrides the previous sections)
-    reply_format = Only Latin characters are supported here.
+    reply = Only Latin characters are supported here.
 
     [plugin_sogs_filter.room.myroom.reply.my_custom_alphabet] ; Reply message for `myroom` that triggered the `my_custom_alphabet` filter (overrides the previous sections)
-    reply_format = Hey this message was disallowed
+    reply = Hey this message was disallowed
 
   See the example as follows:
 
@@ -121,18 +121,25 @@ Config file (.ini):
 ; If true, silently reject messages that trigger the profanity filter, if false, reply with warning
 ; profanity_silent = false
 
-; Alphabets to filter, each filter should be specified one per line (must match a filter name
-; defined in [plugin_sogs_filter.alphabets])
-; alphabets        = persian
-; alphabets        = arabic
+; Alphabets to filter (space-separated list of filter names defined in [plugin_sogs_filter.alphabets])
+; alphabets        = persian arabic cyrillic
 
 ; If true, silently reject alphabet violations that trigger one of the alphabet filters, if false
 ; reply with warning
 ; alphabet_silent  = false
 
 [plugin_sogs_filter.room.*.reply.*]
-; Reply message (can specify multiple times for random selection)
-; reply_format     = Hey {profile_name}! No swearing in {room_name}.
+; Reply message. Multiple lines specify random reply options (one is chosen randomly).
+; Use escape sequences for substitutions:
+;   \@ - @mention of the user
+;   \p - profile name in plain text
+;   \r - room name
+;   \t - room token
+;   \n - line break within a single reply
+;   \\ - literal backslash
+; reply = Hey \p! No swearing in \r.
+;  Watch your language, \@!
+;  This is a family-friendly group.
 
 ; Display name that the reply sent on a filtered message will have
 ; profile_name     = SOGS
@@ -148,11 +155,13 @@ Config file (.ini):
 
   Or any filter name defined in the [plugin_sogs_filter.alphabets] section.
 
-  The reply format can access the following values in the message replied to the user:
-    {profile_name}  - User's display name or Session ID
-    {profile_at}    - @mention of the user
-    {room_name}     - Name of the room
-    {room_token}    - Token of the room
+  The reply value supports the following escape sequences:
+    \\@  - @mention of the poster whose message was declined
+    \\p  - profile name in plain text
+    \\r  - name of the room
+    \\t  - token of the room
+    \\n  - a line break
+    \\\\  - a literal \\ character
 """
 
 import re
@@ -166,10 +175,34 @@ import sogs.plugin
 import os
 import configparser
 
-from collections import OrderedDict
 from typing import Optional, Dict, List, Tuple, Set, Union
-from sogs.plugin import Plugin, ReplySettings, FilterResponse
+from sogs.plugin import Plugin, FilterResponse
 from sogs.model.post import Post
+
+@dataclasses.dataclass
+class ReplySettings:
+    """Settings controlling how the plugin replies to a filtered message.
+    Attributes:
+        reply_formats: List of format strings where one is chosen at random to use as the reply. In
+                       the reply, the following python placeholders are supported:
+                       {profile_name}, {profile_at}, {room_name}, {room_token}.
+
+                       e.g. reply_format_str = "Hey {profile_name}! No swearing in {room_name}."
+
+        profile_name:  Display name for the reply
+        public:        If True the reply is posted publicly; if False it is whispered to the user.
+    """
+    reply_formats: List[str]      = dataclasses.field(default_factory=list)
+    profile_name:  Optional[str]  = 'SOGS'
+    public:        Optional[bool] = False
+
+    def load_from(self, other: "ReplySettings"):
+        if len(other.reply_formats):
+            self.reply_formats = other.reply_formats
+        if other.profile_name:
+            self.profile_name = other.profile_name
+        if other.public:
+            self.public = other.public
 
 class FilterType(enum.Enum):
     Profanity = 0
@@ -393,6 +426,21 @@ class SOGSFilterPlugin(Plugin):
         # Decode the message
         msg = Post(raw=req.message_data)
 
+        def reply(plugin: Plugin, req: sogs.types.RoomAddPostRequest, username: Optional[str], reply_settings: ReplySettings,):
+            from random import choice
+            rf = choice(reply_settings.reply_formats)
+
+            print(f"replying with format: {reply_settings}")
+            session_id_hex: str = req.session_id.hex()
+            body:           str = rf.format(profile_name = session_id_hex if username is None else username,
+                                            profile_at   = f"@{session_id_hex}",
+                                            room_name    = req.room_name,
+                                            room_token   = req.room_token)
+            _ = plugin.post_message(room_token=req.room_token, body=body, whisper_to=None if reply_settings.public else req.user_id)
+
+        msg_username = typing.cast(Optional[str], msg.username)
+        msg_text     = typing.cast(str, msg.text)
+
         # Filter for profanities
         def profanity_check(*args: str):
             import better_profanity
@@ -404,47 +452,48 @@ class SOGSFilterPlugin(Plugin):
         if room_filter.profanity and profanity_check(typing.cast(str, msg.text), typing.cast(str, msg.username)):
             reply_settings = self.get_reply_settings(room_token, filter_type=FilterType.Profanity)
             if reply_settings:
-                print(f"replying with format: {reply_settings}")
-                _ = self.reply(
-                    room_name       = req.room_name,
-                    room_token      = req.room_token,
-                    user_session_id = req.session_id,
-                    username        = msg.username,
-                    reply_settings  = reply_settings)
+                reply(self, req, msg_username, reply_settings)
             result = FilterResponse.Silent if room_filter.profanity_silent else FilterResponse.Reject
 
         # Filter for alphabets
         if result == FilterResponse.Accept and len(room_filter.alphabets):
             for lang, pattern in self.alphabet_patterns:
-                # Lookup each regex pattern for this language and verify the message
                 if lang not in room_filter.alphabets:
                     continue
-                if not pattern.search(msg.text):
+                if not pattern.search(msg_text):
                     continue
 
-                # Filter the language string
                 reply_settings = self.get_reply_settings(room_token, filter_type=FilterType.Alphabet, filter_lang=lang)
                 if reply_settings:
-                    print(f"replying with format: {reply_settings}")
-                    _ = self.reply(room_name       = req.room_name,
-                                   room_token      = req.room_token,
-                                   user_session_id = req.session_id,
-                                   username        = typing.cast(str, msg.username),
-                                   reply_settings  = reply_settings,)
+                    reply(self, req, msg_username, reply_settings)
+
                 result = FilterResponse.Silent if room_filter.alphabet_silent else FilterResponse.Reject
                 break
 
         return result
 
+def process_reply_escapes(text: str) -> str:
+    """Convert escape sequences to format strings or literals.
+
+    Supported escape sequences (matching sogs.ini.filter-sample):
+        \\@ - the profile name, in @tag form, of the poster whose message was declined
+        \\p - the profile name in plain text
+        \\r - the name of the room
+        \\t - the token of the room
+        \\n - a line break
+        \\\\ - a literal \\ character
+    """
+    result = text.replace('\\\\', '\x00')  # Temp placeholder for \\
+    result = result.replace('\\@', '{profile_at}')
+    result = result.replace('\\p', '{profile_name}')
+    result = result.replace('\\r', '{room_name}')
+    result = result.replace('\\t', '{room_token}')
+    result = result.replace('\\n', '\n')
+    result = result.replace('\x00', '\\')  # Restore \\
+    return result
+
 def entry_point():
     import argparse
-
-    class MultiOrderedDict(OrderedDict):
-        def __setitem__(self, key, value):
-            if isinstance(value, list) and key in self:
-                self[key].extend(value)
-            else:
-                super().__setitem__(key, value)
 
     # Argument parser
     parser = argparse.ArgumentParser(description='SOGS Filter')
@@ -465,8 +514,7 @@ def entry_point():
         return
 
     try:
-        # Use custom parser that accumulates duplicate reply_format keys
-        ini_parser = configparser.RawConfigParser(dict_type=MultiOrderedDict, strict=False)
+        ini_parser = configparser.RawConfigParser(strict=False)
         _          = ini_parser.read(ini_file)
 
         # Get filter-specific config from [plugin_sogs_filter] section
@@ -520,10 +568,7 @@ def entry_point():
 
                     if ini_parser.has_option(section, 'alphabets'):
                         alphabets_value = ini_parser.get(section, 'alphabets')
-                        if isinstance(alphabets_value, list):
-                            rooms[room_token].alphabets = {s.strip() for s in alphabets_value if s.strip()}
-                        elif alphabets_value:
-                            rooms[room_token].alphabets = {alphabets_value.strip()}
+                        rooms[room_token].alphabets = {s.strip() for s in alphabets_value.split() if s.strip()}
                 # Reply settings: plugin_sogs_filter.room.<token>.reply.<filter_name>
                 else:
                     if len(parts) == 5:
@@ -537,14 +582,12 @@ def entry_point():
                         if room_token not in rooms:
                             rooms[room_token] = RoomFilter()
 
-                        # Get accumulated reply formats (each reply_format key = one message)
+                        # Get reply formats: each line is a separate random reply option
+                        # Process escape sequences: \@ \p \r \t \n \\
                         reply_formats: List[str] = []
-                        if ini_parser.has_option(section, 'reply_format'):
-                            value = ini_parser.get(section, 'reply_format')
-                            if isinstance(value, list):
-                                reply_formats = value
-                            elif value:
-                                reply_formats = [value]
+                        if ini_parser.has_option(section, 'reply'):
+                            value = ini_parser.get(section, 'reply')
+                            reply_formats = [process_reply_escapes(s.strip()) for s in value.split('\n') if s.strip()]
 
                         # Skip if no reply formats defined (empty reply section is allowed)
                         if not reply_formats:

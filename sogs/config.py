@@ -64,7 +64,7 @@ def load_config():
     else:
         conf_ini = 'sogs.ini'
         if not os.path.exists(conf_ini):
-            logger.info("sogs.ini does not exist; using all config defaults")
+            logger.info("sogs.ini does not exist; using all config defaults (set SOGS_CONFIG=<path/to/config.ini> to use a custom .ini file)")
             conf_ini = None
 
     if not conf_ini:

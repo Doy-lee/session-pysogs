@@ -27,31 +27,6 @@ class FilterResponse(enum.Enum):
         return self.value
 
 @dataclasses.dataclass
-class ReplySettings:
-    """Settings controlling how the plugin replies to a filtered message.
-    Attributes:
-        reply_formats: List of format strings where one is chosen at random to use as the reply. In
-                       the reply, the following python placeholders are supported:
-                       {profile_name}, {profile_at}, {room_name}, {room_token}.
-
-                       e.g. reply_format_str = "Hey {profile_name}! No swearing in {room_name}."
-
-        profile_name:  Display name for the reply
-        public:        If True the reply is posted publicly; if False it is whispered to the user.
-    """
-    reply_formats: List[str]      = dataclasses.field(default_factory=list)
-    profile_name:  Optional[str]  = 'SOGS'
-    public:        Optional[bool] = False
-
-    def load_from(self, other: "ReplySettings"):
-        if len(other.reply_formats):
-            self.reply_formats = other.reply_formats
-        if other.profile_name:
-            self.profile_name = other.profile_name
-        if other.public:
-            self.public = other.public
-
-@dataclasses.dataclass
 class RoomReadRequest:
     room_id:    int
     room_name:  str
@@ -481,25 +456,6 @@ class Plugin:
         Users may override this function for custom filtering, or supply a callable filter object
         """
         return FilterResponse.Accept
-
-    def reply(self, room_name: str, room_token: bytes, user_session_id: SessionID, username: Optional[str], reply_settings:  ReplySettings,) -> Optional[MessageID]:
-        """Call this from your filter() override when you want to reply to a user message, e.g.
-        "hey no swearing here"
-        """
-        from random import choice
-        rf = choice(reply_settings.reply_formats)
-
-        user_session_id_hex = user_session_id.hex()
-        body = rf.format(
-            profile_name = user_session_id_hex if username is None else username,
-            profile_at   = f"@{user_session_id_hex}",
-            room_name    = room_name.decode('utf-8'),
-            room_token   = room_token)
-
-        result: Optional[MessageID] = self.post_message(room_token=room_token,
-                                                        body=body,
-                                                        whisper_target=None if reply_settings.public else user_session_id)
-        return result;
 
     def set_user_room_permissions(self,
                                   room:         Optional[Union[bytes, int]]     = None,
