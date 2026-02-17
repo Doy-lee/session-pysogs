@@ -457,7 +457,7 @@ def setup_omq():
     worker.add_request_command("request_read", request_read)
     worker.add_command("messages_deleted", messages_deleted)
     worker.add_command("message_edited", message_edited)
-    worker.add_command("on_reaction_posted", relay_on_reaction_posted)
+    worker.add_command("reaction_posted", relay_on_reaction_posted)
 
     app.logger.debug("Mule starting omq")
     omq.start()
@@ -838,7 +838,7 @@ def relay_on_reaction_posted(m: oxenmq.Message):
         plugin_info: PluginInfo = plugin_ids[id]
         if id in plugin_conns:
             app.logger.debug(f"Sending reaction to plugin '{plugin_info.name}' (id={id}, required={plugin_info.required})")
-            o.omq.send(plugin_conns[id], "plugin.on_reaction_posted", *req_raw)
+            o.omq.send(plugin_conns[id], "plugin.reaction_posted", *req_raw)
 
 
 @needs_app_context
@@ -887,4 +887,4 @@ def relay_on_message_posted(msg_id: MessageID):
     serialized: bytes = message_posted.to_bencode()
     for plugin_id in plugin_ids.keys():
         if plugin_id in plugin_conns:
-            o.omq.send(plugin_conns[plugin_id], "plugin.on_message_posted", serialized)
+            o.omq.send(plugin_conns[plugin_id], "plugin.message_posted", serialized)

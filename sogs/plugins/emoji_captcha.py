@@ -657,7 +657,7 @@ class EmojiCaptchaPlugin(sogs.plugin.Plugin):
         # NOTE: Register our hook which is called by SOGS when a user attempts to read from the
         # community. In this hook we check if the user has solved a captcha before and lets the user
         # read or otherwise require them to solve captcha to proceed.
-        self.register_request_read_handler(self.handle_request_read)
+        self.register_on_request_read_handler(self.on_request_read)
         self.register_on_reaction_posted_handler(self.on_reaction_posted)
 
         # NOTE: Print some startup diagnostics
@@ -680,7 +680,7 @@ class EmojiCaptchaPlugin(sogs.plugin.Plugin):
         result = self.users.setdefault(session_id, {}).setdefault(room_token, UserCaptchaState())
         return result
 
-    def handle_request_read(self, req: sogs.plugin.RoomReadRequest) -> sogs.types.bt_value:
+    def on_request_read(self, req: sogs.plugin.RoomReadRequest) -> sogs.types.bt_value:
         """Handles generating a CAPTCHA for the user requesting read permission into a particular
         room as well as rate limiting these attempts and allowing users to refresh the provided
         CAPTCHA. If a user already has read permission, this hook is not called for that user.

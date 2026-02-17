@@ -1523,7 +1523,7 @@ class Room:
                                                     room_name  = self.name,
                                                     is_mod     = is_mod,
                                                     is_admin   = is_admin,)
-                    send_mule("on_reaction_posted", req.to_dict())
+                    send_mule("reaction_posted", req.to_dict())
 
             except sqlalchemy.exc.IntegrityError:
                 added = False

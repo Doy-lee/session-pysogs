@@ -222,7 +222,7 @@ class Plugin:
     last_post_time:             int                                                                  = 0
     pre_slash_handlers:         Dict[str, typing.Callable[[Dict[bytes, bt_value], List[str]], bool]] = dataclasses.field(default_factory=dict)
     post_slash_handlers:        Dict[str, typing.Callable[[Dict[bytes, bt_value], List[str]], bool]] = dataclasses.field(default_factory=dict)
-    request_read_handler:       Optional[typing.Callable[[RoomReadRequest], bt_value]]               = None
+    on_request_read_handler:    Optional[typing.Callable[[RoomReadRequest], bt_value]]               = None
     on_reaction_posted_handler: Optional[typing.Callable[[oxenmq.Message, ReactionPosted], None]]    = None
     on_message_posted_handler:  Optional[typing.Callable[[oxenmq.Message, MessagePosted], None]]     = None
     conn:                       Optional[oxenmq.ConnectionID]                                        = None
@@ -333,11 +333,11 @@ class Plugin:
         self.omq = oxenmq.OxenMQ(privkey=self.x_privkey, pubkey=self.x_pubkey, log_level=oxenmq.LogLevel.warn)
         cat      = self.omq.add_category("plugin", access_level=oxenmq.AuthLevel.none)
         cat.add_request_command("filter_message",       self.filter_message)
-        cat.add_command        ("on_message_posted",    self._on_message_posted)
-        cat.add_command        ("on_reaction_posted",   self._on_reaction_posted)
+        cat.add_command        ("message_posted",       self._on_message_posted)
+        cat.add_command        ("reaction_posted",      self._on_reaction_posted)
         cat.add_request_command("pre_message_command",  self.pre_message_command)
         cat.add_request_command("post_message_command", self.post_message_command)
-        cat.add_request_command("request_read",         self.request_read)
+        cat.add_request_command("request_read",         self._on_request_read)
 
     def _require_conn_established(self) -> oxenmq.ConnectionID:
         assert self.conn, "Plugin misuse: Connection to SOGS not established yet, plugin.run() must be called first"
@@ -348,9 +348,9 @@ class Plugin:
 
         # NOTE: Subscribe to the following hooks on SOGS. SOGs will call invoke this plugin via
         # OxenMQ when the commands are triggered.
-        if len(self.pre_slash_handlers) or self.request_read_handler:
+        if len(self.pre_slash_handlers) or self.on_request_read_handler:
             pre_commands: List[str] = list(self.pre_slash_handlers.keys())
-            if self.request_read_handler:
+            if self.on_request_read_handler:
                 pre_commands.append('/request_read')
 
             log.debug(f"Registering {len(pre_commands)} pre-command(s): {pre_commands}")
@@ -416,7 +416,7 @@ class Plugin:
 
             sleep(1)
 
-    def register_request_read_handler(self, handler: Callable[[RoomReadRequest], bt_value]):
+    def register_on_request_read_handler(self, handler: Callable[[RoomReadRequest], bt_value]):
         """
         If a user attempts to read a room but has only "access" to the room, this will be called
         (if registered).
@@ -426,7 +426,7 @@ class Plugin:
         the plugin has had the chance to whisper the user (so the user will see the whisper right away).
         Any return value from the handler will be ignored until SOGS has use for it.
         """
-        self.request_read_handler = handler
+        self.on_request_read_handler = handler
 
         # if not running, finish_init() will do this once connected
         if self.running:
@@ -465,17 +465,17 @@ class Plugin:
     def post_message_command(self, m: oxenmq.Message):
         return self.handle_message_command(m, False)
 
-    def request_read(self, m: oxenmq.Message):
+    def _on_request_read(self, m: oxenmq.Message):
         # Example
         #  {b'room_id': 1, b'room_name': b'foobar', b'room_token': b'foobar', b'session_id': b'1500784b7c2096f6ed811b25c53a63e551954ee6778c7ae4437cb01c4b01fb4a09', b'user_id': 3}
         req       = typing.cast(Dict[bytes, bt_value], oxenc.bt_deserialize(m.dataview()[0]))
         room_info = RoomReadRequest.from_bencode(req)
 
         # this should not be called by sogs if we didn't register it...
-        if not self.request_read_handler:
+        if not self.on_request_read_handler:
             return oxenc.bt_serialize(False)
         try:
-            self.request_read_handler(room_info)
+            self.on_request_read_handler(room_info)
         except Exception as e:
             import traceback
             log.error(f"Failed to handle request_read for room '{room_info.room_token}': {traceback.format_exc()}")

@@ -1,9 +1,8 @@
 import dataclasses
-import typing
 import oxenc
 import oxenmq
-import typing_extensions
 import time
+import sogs.types
 
 from typing      import Optional
 from sogs.types  import bt_value, SessionID, RoomToken, MessageID
@@ -21,9 +20,10 @@ class PermissionPlugin(Plugin):
 
     def __post_init__(self):
         super().__post_init__()
-        self.register_request_read_handler(self.handle_request_read)
+        self.register_on_request_read_handler(self.on_request_read)
+        self.register_on_reaction_posted_handler(self.on_reaction_posted)
 
-    def handle_request_read(self, req: RoomReadRequest) -> bt_value:
+    def on_request_read(self, req: RoomReadRequest) -> bt_value:
         room_token: RoomToken = req.room_token
         session_id: SessionID = req.session_id
         if session_id in self.retry_jail:
@@ -35,16 +35,12 @@ class PermissionPlugin(Plugin):
         if session_id in self.pending_requests and room_token in self.pending_requests[session_id]:
             return oxenc.bt_serialize("OK")
         print(f"request_read from {session_id.hex()}, id={req.user_id}, room={room_token}")
-        msg_id: Optional[MessageID] = self.post_message(
-            room_token,
-            "Please react with a thumbs up to agree to the room rules.",
-            whisper_target=session_id,
-            relay_to_plugins=False,
-        )
+        msg_id: Optional[MessageID] = self.post_message(room_token,
+                                                        "Please react with a thumbs up to agree to the room rules.",
+                                                        whisper_to=req.user_id,
+                                                        relay_to_plugins=False,)
         if msg_id:
-            react_resp: Dict[bytes, bt_value] = self.post_reactions(
-                room_token, msg_id, self.yes_reaction, self.no_reaction
-            )
+            react_resp: Dict[bytes, bt_value] = self.post_reactions(room_token, msg_id, self.yes_reaction, self.no_reaction)
             if b'error' in react_resp:
                 print(f"Error adding reactions to whisper: {react_resp[b'error']}")
                 return oxenc.bt_serialize("ERROR")
@@ -54,41 +50,26 @@ class PermissionPlugin(Plugin):
 
         return oxenc.bt_serialize("OK")
 
-    @typing_extensions.override
-    def on_reaction_posted(self, m: oxenmq.Message):
-        req: Dict[bytes, bt_value] = oxenc.bt_deserialize(m.dataview()[0])
+    def on_reaction_posted(self, m: oxenmq.Message, req: sogs.types.ReactionPosted):  # pyright: ignore[reportUnusedParameter]
         print(f"reaction_posted, req = {req}")
-        msg_id: MessageID = typing.cast(int, req[b'msg_id'])
-        session_id: SessionID = bytes.fromhex(typing.cast(bytes, req[b'session_id']).decode('utf-8'))
-        room_token: RoomToken = typing.cast(bytes, req[b'room_token'])
-        if (
-            session_id in self.pending_requests
-            and room_token in self.pending_requests[session_id]
-            and msg_id == self.pending_requests[session_id][room_token]
-        ):
+        msg_id:     MessageID = req.msg_id
+        session_id: SessionID = req.session_id
+        room_token: RoomToken = req.room_token
+        if (session_id in self.pending_requests and room_token in self.pending_requests[session_id] and msg_id == self.pending_requests[session_id][room_token]):
             print(f"reaction_posted, correct session_id, room, and msg_id")
-            reaction: str = typing.cast(bytes, req[b'reaction']).decode('utf-8')
-            if reaction == self.yes_reaction:
+            if req.reaction == self.yes_reaction:
                 print(f"Granting read permissions to {session_id.hex()} for room with token {room_token}")
-                self.set_user_room_permissions(
-                    room=room_token, user=session_id, sec_from_now=None, read=True
-                )
-                self.set_user_room_permissions(
-                    room=room_token, user=session_id, sec_from_now=120, write=True
-                )
-                self.post_message(
-                    room_token,
-                    f"You may read now.  Study up, and you may learn to write in {self.write_timeout} seconds.",
-                    whisper_target=session_id,
-                    relay_to_plugins=False,
-                )
+                self.set_user_room_permissions(room=room_token, user=session_id, sec_from_now=None, read=True)
+                self.set_user_room_permissions(room=room_token, user=session_id, sec_from_now=120, write=True)
+                self.post_message(room_token,
+                                  f"You may read now.  Study up, and you may learn to write in {self.write_timeout} seconds.",
+                                  whisper_to=req.user_id,
+                                  relay_to_plugins=False,)
             else:
-                self.post_message(
-                    room_token,
-                    f"You chose...poorly.  You may try again in {self.retry_timeout} seconds with a new prompt.",
-                    whisper_target=session_id,
-                    relay_to_plugins=False,
-                )
+                self.post_message(room_token,
+                                  f"You chose...poorly.  You may try again in {self.retry_timeout} seconds with a new prompt.",
+                                  whisper_to=req.user_id,
+                                  relay_to_plugins=False,)
                 self.retry_jail[session_id] = time.time() + self.retry_timeout
             self.delete_message(msg_id)
             del self.pending_requests[session_id][room_token]
