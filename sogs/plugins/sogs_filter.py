@@ -176,7 +176,7 @@ import os
 import configparser
 
 from typing import Optional, Dict, List, Tuple, Set, Union
-from sogs.plugin import Plugin, FilterResponse
+from sogs.plugin import Plugin, FilterResult
 from sogs.model.post import Post
 
 @dataclasses.dataclass
@@ -263,19 +263,21 @@ class SOGSFilterPlugin(Plugin):
         if '*' not in self.rooms:
             self.rooms['*'] = RoomFilter()
 
-        # Legacy path: import deprecated filtering settings from config.py
+        # Legacy path: import deprecated filtering settings from config.py into a temporary
+        # dictionary. We generate the migration .ini from this temporary dictionary, then merge
+        # it into self.rooms (which may already have settings from the new .ini format).
         if 1:
             import sogs.config
-            if sogs.config.FILTER_MODS:
-                self.filter_mods = sogs.config.FILTER_MODS
+            legacy_filter_mods: bool = sogs.config.FILTER_MODS
+            legacy_rooms: Dict[sogs.types.RoomTokenStr, RoomFilter] = {}
 
-            legacy_filter    = RoomFilter(profanity        = sogs.config.PROFANITY_FILTER,
-                                          profanity_silent = sogs.config.PROFANITY_SILENT,
-                                          alphabets        = sogs.config.ALPHABET_FILTERS,
-                                          alphabet_silent  = sogs.config.ALPHABET_SILENT)
+            legacy_filter = RoomFilter(profanity        = sogs.config.PROFANITY_FILTER,
+                                       profanity_silent = sogs.config.PROFANITY_SILENT,
+                                       alphabets        = sogs.config.ALPHABET_FILTERS,
+                                       alphabet_silent  = sogs.config.ALPHABET_SILENT)
 
             # FILTER_SETTINGS is a hash table that maps the room_token->room_filter->reply settings.
-            # We migrate those filter categories into our self.rooms hash table. These rooms inherit
+            # We migrate those filter categories into our legacy_rooms hash table. These rooms inherit
             # the filter options specified by the globally defined `legacy_filter`.
             #
             # Example:
@@ -294,22 +296,22 @@ class SOGSFilterPlugin(Plugin):
             # Where room filter is ('*', 'profanity', 'alphabet', a custom filter defined by the user)
             FILTER_SETTINGS = typing.cast(Dict[str, Dict[str, Dict[str, Union[List[str], str, bool, None]]]], sogs.config.FILTER_SETTINGS)
             for room in FILTER_SETTINGS:
-                self.rooms[room] = copy.copy(legacy_filter)
+                legacy_rooms[room] = copy.copy(legacy_filter)
                 for room_filter in FILTER_SETTINGS[room]:
                     reply_src_dict: Dict[str, Union[List[str], str, bool, None]] = FILTER_SETTINGS[room][room_filter]
                     reply_dest:     Optional[ReplySettings]                      = None
                     if room_filter == '*':
-                        self.rooms[room].universal_reply = ReplySettings()
-                        reply_dest                       = self.rooms[room].universal_reply
+                        legacy_rooms[room].universal_reply = ReplySettings()
+                        reply_dest                         = legacy_rooms[room].universal_reply
                     elif room_filter == 'profanity':
-                        self.rooms[room].profanity_reply = ReplySettings()
-                        reply_dest                       = self.rooms[room].profanity_reply
+                        legacy_rooms[room].profanity_reply = ReplySettings()
+                        reply_dest                         = legacy_rooms[room].profanity_reply
                     elif room_filter == 'alphabet':
-                        self.rooms[room].alphabet_reply = ReplySettings()
-                        reply_dest                              = self.rooms[room].alphabet_reply
+                        legacy_rooms[room].alphabet_reply = ReplySettings()
+                        reply_dest                        = legacy_rooms[room].alphabet_reply
                     else:
-                        self.rooms[room].alphabet_other_replies[room_filter] = ReplySettings()
-                        reply_dest                                             = self.rooms[room].alphabet_other_replies[room_filter]
+                        legacy_rooms[room].alphabet_other_replies[room_filter] = ReplySettings()
+                        reply_dest                                             = legacy_rooms[room].alphabet_other_replies[room_filter]
 
                     assert reply_dest
                     reply_dest.public        = typing.cast(Union[bool, None], reply_src_dict.get('public',       None))
@@ -318,7 +320,7 @@ class SOGSFilterPlugin(Plugin):
 
             # ROOM_OVERRIDES is a hash table that maps room to the various settings which are
             # different from the legacy variable FILTER_SETTINGS. We migrate these values into the
-            # rooms and update this plugin's `Filter` class accordingly.
+            # legacy_rooms and update this plugin's `Filter` class accordingly.
             #
             # Example:
             #
@@ -330,15 +332,56 @@ class SOGSFilterPlugin(Plugin):
             # }
             ROOM_OVERRIDES = typing.cast(Dict[str, Dict[str, Union[bool, Set[str]]]], sogs.config.ROOM_OVERRIDES)
             for room_token in ROOM_OVERRIDES:
-                self.rooms[room_token] = copy.copy(legacy_filter)
+                legacy_rooms[room_token] = copy.copy(legacy_filter)
                 if 'profanity_filter' in ROOM_OVERRIDES[room_token]:
-                    self.rooms[room_token].profanity = typing.cast(bool, ROOM_OVERRIDES[room_token]['profanity_filter'])
+                    legacy_rooms[room_token].profanity = typing.cast(bool, ROOM_OVERRIDES[room_token]['profanity_filter'])
                 if 'profanity_silent' in ROOM_OVERRIDES[room_token]:
-                    self.rooms[room_token].profanity_silent = typing.cast(bool, ROOM_OVERRIDES[room_token]['profanity_silent'])
+                    legacy_rooms[room_token].profanity_silent = typing.cast(bool, ROOM_OVERRIDES[room_token]['profanity_silent'])
                 if 'alphabet_filters' in ROOM_OVERRIDES[room_token]:
-                    self.rooms[room_token].alphabets = typing.cast(Set[str], ROOM_OVERRIDES[room_token]['alphabet_filters'])
+                    legacy_rooms[room_token].alphabets = typing.cast(Set[str], ROOM_OVERRIDES[room_token]['alphabet_filters'])
                 if 'alphabet_silent' in ROOM_OVERRIDES[room_token]:
-                    self.rooms[room_token].alphabet_silent = typing.cast(bool, ROOM_OVERRIDES[room_token]['alphabet_silent'])
+                    legacy_rooms[room_token].alphabet_silent = typing.cast(bool, ROOM_OVERRIDES[room_token]['alphabet_silent'])
+
+            legacy_data_loaded = len(ROOM_OVERRIDES) > 0 or len(FILTER_SETTINGS) > 0
+
+            if legacy_data_loaded:
+                # Generate migration .ini from legacy settings before merging
+                migration_ini = self.generate_migration_ini(legacy_filter_mods, legacy_rooms)
+                migration_message = (
+                    "\n"
+                    "================================================================================\n"
+                    "LEGACY FILTER SETTINGS DETECTED - MIGRATION RECOMMENDED\n"
+                    "================================================================================\n"
+                    "\n"
+                    "Legacy filter settings ([room:*], [filter:*:*], [messages] filter options) were\n"
+                    "detected and loaded. It is recommended to migrate to the new plugin configuration\n"
+                    "format for better maintainability and future compatibility.\n"
+                    "\n"
+                    "To migrate:\n"
+                    "  1. Copy the configuration below into the config file used for the plugin\n"
+                    "     (sogs_filter.ini or PLUGIN_SOGS_FILTER_INI_PATH if it was set)\n"
+                    "  2. Remove the legacy settings from your old config file:\n"
+                    "     - [messages] section filter options (profanity_filter, alphabet_filters, etc.)\n"
+                    "     - [room:<token>] sections\n"
+                    "     - [filter:<type>:<room>] sections\n"
+                    "\n"
+                    "--- BEGIN MIGRATED CONFIGURATION ---\n"
+                    f"{migration_ini}"
+                    "--- END MIGRATED CONFIGURATION ---\n"
+                    "\n"
+                    "================================================================================"
+                )
+                sogs.plugin.log.warning(migration_message)
+
+                # Merge legacy settings into self (legacy settings take lower precedence than new .ini)
+                if legacy_filter_mods and not self.filter_mods:
+                    self.filter_mods = legacy_filter_mods  # pyright: ignore[reportUnreachable]
+
+                for room_token, legacy_room_filter in legacy_rooms.items():
+                    if room_token not in self.rooms:
+                        self.rooms[room_token] = legacy_room_filter
+                    # If room exists in new config, the new config takes precedence (no merge)
+
 
         # NOTE: Print some startup diagnostics
         alphabet_desc: str = ""
@@ -357,7 +400,7 @@ class SOGSFilterPlugin(Plugin):
                 break
             if len(room_desc):
                 room_desc += ", "
-            room_desc += it[0]
+            room_desc += it
 
         desc_lines: List[Tuple[str, str]] = self.describe_config()
         desc_lines.extend([
@@ -365,6 +408,9 @@ class SOGSFilterPlugin(Plugin):
             ("Alphabets",   f"({len(self.alphabet_patterns)}) [{alphabet_desc}]"),
             ("Rooms",       f"({len(self.rooms)}) [{room_desc}]"),
         ])
+
+        import pprint
+        pprint.pprint(self.rooms, width=100)
 
         import sogs.utils
         log_line: str = "Plugin loaded:\n  " + "\n  ".join(sogs.utils.pretty_format_key_value_list(desc_lines))
@@ -404,11 +450,105 @@ class SOGSFilterPlugin(Plugin):
 
         return result
 
+    def generate_migration_ini(self, legacy_filter_mods: bool, legacy_rooms: Dict[sogs.types.RoomTokenStr, RoomFilter]) -> str:
+        """Generate a .ini file string with the migrated settings from legacy config.
+
+        This converts the legacy data structures (from FILTER_SETTINGS and ROOM_OVERRIDES)
+        into the new [plugin_sogs_filter.*] .ini format.
+
+        Args:
+            legacy_filter_mods: The legacy filter_mods setting value.
+            legacy_rooms: Dictionary of room tokens to RoomFilter configurations loaded
+                          from legacy settings.
+
+        Returns:
+            A string containing the complete .ini file content that can be copied
+            into the user's plugin configuration file.
+        """
+        lines: List[str] = []
+
+        # Header comment
+        lines.append("; =============================================================================")
+        lines.append("; SOGS Filter Plugin - Migrated Configuration")
+        lines.append("; =============================================================================")
+        lines.append("; This configuration was auto-generated from legacy filter settings.")
+        lines.append("; Copy this content into the file specified by PLUGIN_SOGS_FILTER_INI_PATH")
+        lines.append("; environment variable (as per the plugin documentation).")
+        lines.append(";")
+        lines.append("; After migrating, remove the following legacy sections from your old config:")
+        lines.append(";   - [messages] filter settings (profanity_filter, alphabet_filters, etc.)")
+        lines.append(";   - [room:<token>] sections")
+        lines.append(";   - [filter:<type>:<room>] sections")
+        lines.append("; =============================================================================")
+        lines.append("")
+
+        # [plugin_sogs_filter] section
+        lines.append("[plugin_sogs_filter]")
+        lines.append(f"filter_mods = {str(legacy_filter_mods).lower()}")
+        lines.append("")
+
+        # [plugin_sogs_filter.alphabets] section - commented out with directive
+        lines.append("[plugin_sogs_filter.alphabets]")
+        lines.append("; Define your alphabet filter patterns below as: filter_name = regex_pattern")
+        lines.append("; You must manually add the regex patterns for each alphabet filter you wish to use.")
+        lines.append("; Order matters: more specific patterns should come before broader ones.")
+        lines.append("; Example patterns:")
+        lines.append("; persian  = [\\u0621-\\u0628\\u062a-\\u063a\\u0641-\\u0642\\u0644-\\u0648\\u064e-\\u0651\\u0655\\u067e\\u0686\\u0698\\u06a9\\u06af\\u06be\\u06cc]")
+        lines.append("; arabic   = [\\u0600-\\u06ff\\u0750-\\u077f\\u08a0-\\u08ff\\ufb50-\\ufdff\\ufe70-\\ufefe]")
+        lines.append("; cyrillic = [\\u0400-\\u04ff]")
+        lines.append("")
+
+        # Helper function to generate reply settings section
+        def write_reply_settings(section_name: str, reply_settings: ReplySettings) -> None:
+            lines.append(f"[{section_name}]")
+            if reply_settings.reply_formats:
+                # Convert each reply format back to .ini escape sequences
+                # Multiple lines in .ini = multiple random reply options
+                for i, fmt in enumerate(reply_settings.reply_formats):
+                    if i == 0:
+                        lines.append(f"reply = {fmt}")
+                    else:
+                        # Continuation lines (indented)
+                        lines.append(f" {fmt}")
+            if reply_settings.profile_name and reply_settings.profile_name != 'SOGS':
+                lines.append(f"profile_name = {reply_settings.profile_name}")
+            if reply_settings.public:
+                lines.append(f"public = true")
+            lines.append("")
+
+        # Generate room sections
+        for room_token, room_filter in legacy_rooms.items():
+            # [plugin_sogs_filter.room.<token>] section
+            lines.append(f"[plugin_sogs_filter.room.{room_token}]")
+            lines.append(f"profanity = {str(room_filter.profanity).lower()}")
+            if room_filter.profanity_silent:
+                lines.append(f"profanity_silent = {str(room_filter.profanity_silent).lower()}")
+            if room_filter.alphabets:
+                lines.append(f"alphabets = {' '.join(sorted(room_filter.alphabets))}")
+            if room_filter.alphabet_silent:
+                lines.append(f"alphabet_silent = {str(room_filter.alphabet_silent).lower()}")
+            lines.append("")
+
+            # Reply settings sections
+            if room_filter.universal_reply and room_filter.universal_reply.reply_formats:
+                write_reply_settings(f"plugin_sogs_filter.room.{room_token}.reply.*", room_filter.universal_reply)
+
+            if room_filter.profanity_reply and room_filter.profanity_reply.reply_formats:
+                write_reply_settings(f"plugin_sogs_filter.room.{room_token}.reply.profanity", room_filter.profanity_reply)
+
+            if room_filter.alphabet_reply and room_filter.alphabet_reply.reply_formats:
+                write_reply_settings(f"plugin_sogs_filter.room.{room_token}.reply.alphabet", room_filter.alphabet_reply)
+
+            for lang_name, lang_reply in room_filter.alphabet_other_replies.items():
+                if lang_reply.reply_formats:
+                    write_reply_settings(f"plugin_sogs_filter.room.{room_token}.reply.{lang_name}", lang_reply)
+
+        return '\n'.join(lines)
+
     @typing_extensions.override
-    def filter(self, req: sogs.types.RoomAddPostRequest) -> FilterResponse:
-        result = FilterResponse.Accept
+    def filter(self, req: sogs.types.RoomAddPostRequest) -> FilterResult:
         if req.is_mod and not self.filter_mods:
-            return result
+            return FilterResult.accept()
 
         room_token: str = req.room_token.decode('utf-8')
         print(f"filtering for room_token: {room_token}")
@@ -421,7 +561,7 @@ class SOGSFilterPlugin(Plugin):
             room_filter = self.rooms['*']
 
         if not room_filter.profanity and len(room_filter.alphabets) == 0:
-            return result
+            return FilterResult.accept()
 
         # Decode the message
         msg = Post(raw=req.message_data)
@@ -453,10 +593,13 @@ class SOGSFilterPlugin(Plugin):
             reply_settings = self.get_reply_settings(room_token, filter_type=FilterType.Profanity)
             if reply_settings:
                 reply(self, req, msg_username, reply_settings)
-            result = FilterResponse.Silent if room_filter.profanity_silent else FilterResponse.Reject
+            if room_filter.profanity_silent:
+                return FilterResult.silent(reason="profanity")
+            else:
+                return FilterResult.reject(reason="profanity")
 
         # Filter for alphabets
-        if result == FilterResponse.Accept and len(room_filter.alphabets):
+        if len(room_filter.alphabets):
             for lang, pattern in self.alphabet_patterns:
                 if lang not in room_filter.alphabets:
                     continue
@@ -467,10 +610,12 @@ class SOGSFilterPlugin(Plugin):
                 if reply_settings:
                     reply(self, req, msg_username, reply_settings)
 
-                result = FilterResponse.Silent if room_filter.alphabet_silent else FilterResponse.Reject
-                break
+                if room_filter.alphabet_silent:
+                    return FilterResult.silent(reason=f"alphabet: {lang}")
+                else:
+                    return FilterResult.reject(reason=f"alphabet: {lang}")
 
-        return result
+        return FilterResult.accept()
 
 def process_reply_escapes(text: str) -> str:
     """Convert escape sequences to format strings or literals.
