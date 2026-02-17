@@ -300,7 +300,7 @@ class Plugin:
         self.session_id                                = b"\x15" + self.blind15_pubkey
 
         # Setup networking to SOGS via OMQ
-        self.omq = oxenmq.OxenMQ(privkey=self.x_privkey, pubkey=self.x_pubkey, log_level=oxenmq.LogLevel.debug)
+        self.omq = oxenmq.OxenMQ(privkey=self.x_privkey, pubkey=self.x_pubkey, log_level=oxenmq.LogLevel.warn)
         cat      = self.omq.add_category("plugin", access_level=oxenmq.AuthLevel.none)
         cat.add_request_command("filter_message",       self.filter_message)
         cat.add_command        ("on_message_posted",    self._on_message_posted)
@@ -747,7 +747,7 @@ class Plugin:
             print(f"upload_file exception: {e}")
             return None
 
-    def _on_message_posted(self, m: oxenmq.Message):  # pyright: ignore[reportUnusedParameter]
+    def _on_message_posted(self, m: oxenmq.Message):
         """Handle message posted events from SOGS, override this in your plugin to customise the behaviour"""
         parse = MessagePosted.from_bencode(m.dataview()[0])
         if self.on_message_posted_handler:
