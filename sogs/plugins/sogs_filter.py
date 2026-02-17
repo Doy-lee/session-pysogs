@@ -316,7 +316,7 @@ class SOGSFilterPlugin(Plugin):
                     assert reply_dest
                     reply_dest.public        = typing.cast(Union[bool, None], reply_src_dict.get('public',       None))
                     reply_dest.profile_name  = typing.cast(Union[str,  None], reply_src_dict.get('profile_name', None))
-                    reply_dest.reply_formats = typing.cast(List[str],         reply_src_dict.get('reply_formats', []))
+                    reply_dest.reply_formats = typing.cast(List[str],         reply_src_dict.get('reply', []))
 
             # ROOM_OVERRIDES is a hash table that maps room to the various settings which are
             # different from the legacy variable FILTER_SETTINGS. We migrate these values into the
@@ -408,9 +408,6 @@ class SOGSFilterPlugin(Plugin):
             ("Alphabets",   f"({len(self.alphabet_patterns)}) [{alphabet_desc}]"),
             ("Rooms",       f"({len(self.rooms)}) [{room_desc}]"),
         ])
-
-        import pprint
-        pprint.pprint(self.rooms, width=100)
 
         import sogs.utils
         log_line: str = "Plugin loaded:\n  " + "\n  ".join(sogs.utils.pretty_format_key_value_list(desc_lines))
