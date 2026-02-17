@@ -548,7 +548,7 @@ class SOGSFilterPlugin(Plugin):
             return FilterResult.accept()
 
         room_token: str = req.room_token.decode('utf-8')
-        print(f"filtering for room_token: {room_token}")
+        sogs.plugin.log.debug(f"Filtering message in room '{room_token}' from user {req.user_id}")
 
         # Retrieve the filter for this room
         room_filter = RoomFilter()
@@ -567,7 +567,7 @@ class SOGSFilterPlugin(Plugin):
             from random import choice
             rf = choice(reply_settings.reply_formats)
 
-            print(f"replying with format: {reply_settings}")
+            sogs.plugin.log.debug(f"Sending filter reply to user {req.user_id} (public={reply_settings.public})")
             session_id_hex: str = req.session_id.hex()
             body:           str = rf.format(profile_name = session_id_hex if username is None else username,
                                             profile_at   = f"@{session_id_hex}",

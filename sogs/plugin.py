@@ -323,13 +323,13 @@ class Plugin:
             if self.request_read_handler:
                 pre_commands.append('/request_read')
 
-            print(f"Registering pre-commands: {pre_commands}")
+            log.debug(f"Registering {len(pre_commands)} pre-command(s): {pre_commands}")
             self.omq.send(conn, "plugin.register_pre_commands", oxenc.bt_serialize({b'commands': pre_commands}))
 
         if len(self.post_slash_handlers):
             post_commands: List[str] = list(self.post_slash_handlers.keys())
 
-            print(f"Registering post-commands: {post_commands}")
+            log.debug(f"Registering {len(post_commands)} post-command(s): {post_commands}")
             self.omq.send(conn, "plugin.register_post_commands", oxenc.bt_serialize({b'commands': list(post_commands)}))
 
     def say_hello(self):
@@ -345,9 +345,9 @@ class Plugin:
                 log.info(f"Plugin '{self.display_name}' (0x{self.ed_pubkey[:2].hex()}..{self.ed_pubkey[-2:].hex()}) {connect_str} to SOGS at {self.sogs_address} (0x{self.sogs_pubkey[:2].hex()}..{self.sogs_pubkey[-2:].hex()}) ✅")
                 self.running = True
                 return
-            print(f"Plugin hello error from sogs: {resp}")
+            log.error(f"Unexpected response from SOGS during hello: {resp}")
         except Exception as e:
-            print(f"Exception in plugin hello: {e}")
+            log.error(f"Failed to complete hello handshake: {e}")
 
     def run(self):
         self.omq.start()
@@ -426,7 +426,7 @@ class Plugin:
             retval: bool = command_container[command](req, command_parts)
             return oxenc.bt_serialize(retval)
         except Exception as e:
-            print(f"Exception handling slash command: {e}")
+            log.error(f"Failed to handle slash command '{command}': {e}")
             return oxenc.bt_serialize(True)
 
     def pre_message_command(self, m: oxenmq.Message):
@@ -448,7 +448,7 @@ class Plugin:
             self.request_read_handler(room_info)
         except Exception as e:
             import traceback
-            print(f"Exception in request_read handler: {traceback.format_exc()}")
+            log.error(f"Failed to handle request_read for room '{room_info.room_token}': {traceback.format_exc()}")
         return oxenc.bt_serialize(True)
 
     def register_command(self, command: str, handler: typing.Callable[[Dict[bytes, bt_value], List[str]], bool], pre_command: bool):
@@ -498,7 +498,7 @@ class Plugin:
             result: FilterResult = self.filter(req)
             return result.to_bencode()
         except Exception as e:
-            print(f"Exception filtering message: {e}")
+            log.error(f"Failed to filter message: {e}")
             return FilterResult.reject(reason=str(e)).to_bencode()
 
     def filter(self, req: RoomAddPostRequest) -> FilterResult:  # pyright: ignore[reportUnusedParameter]
@@ -531,24 +531,24 @@ class Plugin:
         elif isinstance(room, bytes):
             req.room_token = room
         else:
-            print("Room identifier (token `bytes` or id `int`) is required for permissions changes.")
+            log.warning(f"Invalid room identifier type '{type(room).__name__}': expected bytes or int")
             return SetUserRoomPermissionsResponse.InvalidArg
 
         # NOTE: Set the user
         if isinstance(user, SessionID):
             if len(user) != 33:
-                print("User passed as `SessionID` must be a 33b blinded public key for permissions changes.")
+                log.warning(f"Invalid SessionID length {len(user)}: expected 33 bytes for blinded public key")
                 return SetUserRoomPermissionsResponse.InvalidArg
             req.user_session_id = user
         elif isinstance(user, int):
             req.user_id = user
         else:
-            print("User (`SessionID` or id `int`) is required for permissions changes.")
+            log.warning(f"Invalid user identifier type '{type(user).__name__}': expected SessionID or int")
             return SetUserRoomPermissionsResponse.InvalidArg
 
         # NOTE: Set permissions
         if not accessible and not read and not write:
-            print("At least one permission should be specified (`accessible`, `read`, `write`) for permissions changes.")
+            log.warning("No permissions specified: at least one of 'accessible', 'read', or 'write' required")
             return SetUserRoomPermissionsResponse.InvalidArg
         if accessible is not None:
             req.accessible = accessible
@@ -561,7 +561,7 @@ class Plugin:
         if sec_from_now:
             UPPER_BOUND: int = 1_000_000_000
             if not 0 < sec_from_now < UPPER_BOUND:
-                print(f"Enqueuing a permission change in the future must be bounded between [0 < {sec_from_now} < {UPPER_BOUND}]")
+                log.warning(f"Invalid delay {sec_from_now}s: must be between 0 and {UPPER_BOUND}")
                 return SetUserRoomPermissionsResponse.InvalidArg
 
             req.in_s = sec_from_now
@@ -686,12 +686,12 @@ class Plugin:
     def post_reactions(self, room_token: bytes, msg_id: MessageID, *reactions: str) -> Dict[bytes, bt_value]:
         conn: oxenmq.ConnectionID = self._require_conn_established()
         req = {b"room_token": room_token, b"msg_id": msg_id, b"reactions": reactions}
-        print(f"post_reactions request: {req}")
+        log.debug(f"Posting {len(reactions)} reaction(s) to message {msg_id} in room '{room_token.decode()}'")
         return oxenc.bt_deserialize(self.omq.request_future( conn, "plugin.post_reactions", oxenc.bt_serialize(req), request_timeout=timedelta(seconds=5)).get()[0])
 
     def remove_reactions(self, room_token: bytes, msg_id: MessageID, *reactions: str):
         req = {b"room_token": room_token, b"msg_id": msg_id, b"reactions": reactions}
-        print(f"post_reactions request: {req}")
+        log.debug(f"Removing {len(reactions)} reaction(s) from message {msg_id} in room '{room_token.decode()}'")
 
         conn: oxenmq.ConnectionID = self._require_conn_established()
         return oxenc.bt_deserialize(
@@ -721,7 +721,7 @@ class Plugin:
             resp = oxenc.bt_deserialize(self.omq.request_future(conn, "plugin.upload_file", oxenc.bt_serialize(req), request_timeout=timedelta(seconds=3),).get()[0])
 
             if not (b"file_id" in resp and b"url" in resp):
-                print(f"file_id or url missing from sogs response to upload_file")
+                log.error(f"Incomplete upload response for '{filename}': missing file_id or url")
                 return None
 
             metadata = {
@@ -744,7 +744,7 @@ class Plugin:
             return metadata
 
         except Exception as e:
-            print(f"upload_file exception: {e}")
+            log.error(f"Failed to upload file '{file_path}': {e}")
             return None
 
     def _on_message_posted(self, m: oxenmq.Message):
