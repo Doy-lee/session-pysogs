@@ -18,13 +18,63 @@ console_log_handler = logging.StreamHandler()
 console_log_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s'))
 
 class FilterResponse(enum.Enum):
-    Accept = "OK"
-    Reject = "REJECT"
-    Silent = "SILENT"
+    Accept = "OK"     # Accept message, it will be posted and visible in the room
+    Reject = "REJECT" # Reject message, message will not be posted
+    Silent = "SILENT" # Accept message, it will be posted but only visible to the user that posted it
 
     @typing_extensions.override
     def __str__(self):
         return self.value
+
+@dataclasses.dataclass
+class FilterResult:
+    status: FilterResponse
+    reason: Optional[str] = None
+
+    @staticmethod
+    def accept() -> "FilterResult":
+        return FilterResult(status=FilterResponse.Accept)
+
+    @staticmethod
+    def reject(reason: Optional[str] = None) -> "FilterResult":
+        return FilterResult(status=FilterResponse.Reject, reason=reason)
+
+    @staticmethod
+    def silent(reason: Optional[str] = None) -> "FilterResult":
+        return FilterResult(status=FilterResponse.Silent, reason=reason)
+
+    @staticmethod
+    def from_dict(src: Dict[bytes, bt_value]) -> "FilterResult":
+        status_str = typing.cast(bytes, src.get(b'status', b'REJECT')).decode('utf-8')
+        if status_str == str(FilterResponse.Accept):
+            status = FilterResponse.Accept
+        elif status_str == str(FilterResponse.Silent):
+            status = FilterResponse.Silent
+        else:
+            status = FilterResponse.Reject
+
+        reason: Optional[str] = None
+        if b'reason' in src:
+            reason = typing.cast(bytes, src[b'reason']).decode('utf-8')
+
+        result = FilterResult(status=status, reason=reason)
+        return result
+
+    @staticmethod
+    def from_bencode(data: Union[bytes, memoryview]) -> "FilterResult":
+        d: Dict[bytes, bt_value] = oxenc.bt_deserialize(data)
+        result                   = FilterResult.from_dict(d)
+        return result
+
+    def to_dict(self) -> Dict[bytes, bytes]:
+        result: Dict[bytes, bytes] = {b'status': str(self.status).encode('utf-8')}
+        if self.reason:
+            result[b'reason'] = self.reason.encode('utf-8')
+        return result
+
+    def to_bencode(self) -> bytes:
+        result = oxenc.bt_serialize(self.to_dict())
+        return result
 
 @dataclasses.dataclass
 class RoomReadRequest:
@@ -444,18 +494,19 @@ class Plugin:
 
     def filter_message(self, m: oxenmq.Message):
         try:
-            req                  = RoomAddPostRequest.from_bencode(m.dataview()[0])
-            resp: FilterResponse = self.filter(req)
-            return oxenc.bt_serialize(str(resp))
+            req              = RoomAddPostRequest.from_bencode(m.dataview()[0])
+            result: FilterResult = self.filter(req)
+            return result.to_bencode()
         except Exception as e:
             print(f"Exception filtering message: {e}")
-            return oxenc.bt_serialize(str(FilterResponse.Reject))
+            return FilterResult.reject(reason=str(e)).to_bencode()
 
-    def filter(self, req: RoomAddPostRequest) -> FilterResponse:  # pyright: ignore[reportUnusedParameter]
+    def filter(self, req: RoomAddPostRequest) -> FilterResult:  # pyright: ignore[reportUnusedParameter]
         """
-        Users may override this function for custom filtering, or supply a callable filter object
+        Users may override this function for custom filtering, or supply a callable filter object.
+        Returns a FilterResult with status and optional reason for filtering.
         """
-        return FilterResponse.Accept
+        return FilterResult.accept()
 
     def set_user_room_permissions(self,
                                   room:         Optional[Union[bytes, int]]     = None,
@@ -630,7 +681,6 @@ class Plugin:
             return None
 
         msg_id = typing.cast(MessageID, resp[b'msg_id'])
-        print(f"Message inserted, id: {msg_id}")
         return msg_id
 
     def post_reactions(self, room_token: bytes, msg_id: MessageID, *reactions: str) -> Dict[bytes, bt_value]:

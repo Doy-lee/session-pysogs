@@ -9,7 +9,7 @@ import sogs.types
 import sogs.utils
 import logging
 
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 from oxenc import bt_deserialize, bt_serialize
 from datetime import timedelta
 from nacl.encoding import HexEncoder
@@ -69,6 +69,12 @@ class PluginInfo:
     required: bool  = False
     name:     str   = ''
     ed_key:   bytes = b''
+
+@dataclasses.dataclass
+class FilterResult:
+    response: sogs.plugin.FilterResponse
+    info:     Optional[PluginInfo] = None
+    reason:   Optional[str]        = None  # Human-readable description of why the message was filtered
 
 # not changing the keys, since this is just for fixing the values if they
 # need to be str and not bytes
@@ -193,14 +199,25 @@ def plugin_on_room_add_post_request(m: oxenmq.Message) -> Optional[bytes]:
     responded = False
     try:
         # Run message filtering hooks
-        req:         sogs.types.RoomAddPostRequest = sogs.types.RoomAddPostRequest.from_bencode(m.dataview()[0])
-        filter_resp: sogs.plugin.FilterResponse    = plugin_filter_message(req)
-        if filter_resp == sogs.plugin.FilterResponse.Reject:
-            return bt_serialize({b"error": "Message rejected by filter plugin(s)"})
+        req:           sogs.types.RoomAddPostRequest = sogs.types.RoomAddPostRequest.from_bencode(m.dataview()[0])
+        filter_result: FilterResult                  = plugin_filter_message(req)
+        if filter_result.response == sogs.plugin.FilterResponse.Reject:
+            # Build detailed error message
+            plugin_desc = ""
+            if filter_result.info:
+                plugin_desc = f"'{filter_result.info.name}' (0x{filter_result.info.ed_key.hex()[:8]}..{filter_result.info.ed_key.hex()[-8:]})"
+
+            error_msg = "Message rejected"
+            if plugin_desc:
+                error_msg += f" by {plugin_desc}"
+            if filter_result.reason:
+                error_msg += f" [{filter_result.reason}]"
+
+            return bt_serialize({b"error": error_msg})
 
         # Create the updated payload (w/ filtered now set, if it was filtered)
         raw_payload: list[bytes] = m.data()
-        if filter_resp == sogs.plugin.FilterResponse.Silent:
+        if filter_result.response == sogs.plugin.FilterResponse.Silent:
             req.filtered   = True
             raw_payload[0] = req.to_bencode()
 
@@ -287,10 +304,11 @@ def message_edited(m: oxenmq.Message):
     app.logger.debug("FIXME: mule -- message edited stub")
 
 @log_exceptions
-def plugin_filter_message(req: sogs.types.RoomAddPostRequest) -> sogs.plugin.FilterResponse:
+def plugin_filter_message(req: sogs.types.RoomAddPostRequest) -> FilterResult:
+    result                                 = FilterResult(response=sogs.plugin.FilterResponse.Accept)
     plugin_ids: Dict[PluginID, PluginInfo] = get_relevant_plugins("approver = 1", room_id=req.room_id)
     if len(plugin_ids) == 0:
-        return sogs.plugin.FilterResponse.Accept
+        return result
 
     app.logger.debug(f"Requesting message approval from {len(plugin_ids)} plugins.")
 
@@ -300,35 +318,53 @@ def plugin_filter_message(req: sogs.types.RoomAddPostRequest) -> sogs.plugin.Fil
         info: PluginInfo = plugin_ids[id]
         if info.required and id not in plugin_conns:
             app.logger.warning(f"Message rejected because required plugin '{info.name}' (id={id}, ed_key={info.ed_key.hex()}) was required but has not connected to SOGS yet")
-            return sogs.plugin.FilterResponse.Reject
+            return FilterResult(response=sogs.plugin.FilterResponse.Reject, info=info)
 
     # Submit the message to the plugins and collect the async handles
-    pending_requests: List[oxenmq.ResultFuture] = []
+    pending_requests: List[Tuple[oxenmq.ResultFuture, PluginID]] = []
     for id in plugin_ids:
         if id in plugin_conns:
-            pending_requests.append(o.omq.request_future(plugin_conns[id], "plugin.filter_message", req.to_bencode(), timeout = timedelta(seconds=1).seconds,))
+            pending_requests.append((
+                o.omq.request_future(plugin_conns[id], "plugin.filter_message", req.to_bencode(), timeout = timedelta(seconds=1).seconds,),
+                id,
+            ))
 
     # Await all the async handles
-    silent = False
+    silent_result: Optional[FilterResult] = None
     for pending in pending_requests:
+        future:      oxenmq.ResultFuture = pending[0]
+        plugin_info: PluginInfo          = plugin_ids[pending[1]]
         try:
-            response: List[bytes] = pending.get()
+            response: List[bytes] = future.get()
             if len(response) != 1:
-                return sogs.plugin.FilterResponse.Reject
+                return FilterResult(response=sogs.plugin.FilterResponse.Reject, info=plugin_info)
 
-            resp_text: str = typing.cast(bytes, bt_deserialize(response[0])).decode('utf-8')
-            if resp_text == str(sogs.plugin.FilterResponse.Accept):
+            # Parse the response from the plugin
+            plugin_result = sogs.plugin.FilterResult.from_bencode(response[0])
+
+            if plugin_result.status == sogs.plugin.FilterResponse.Accept:
                 continue
-            elif resp_text == str(sogs.plugin.FilterResponse.Silent):
-                silent = True
+
+            if plugin_result.status == sogs.plugin.FilterResponse.Silent:
+                # Capture the first silent result with details
+                if silent_result is None:
+                    silent_result = FilterResult(response = sogs.plugin.FilterResponse.Silent,
+                                                 info     = plugin_info,
+                                                 reason   = plugin_result.reason)
                 continue
-            else:
-                return sogs.plugin.FilterResponse.Reject
+
+            # Reject
+            result = FilterResult(response = sogs.plugin.FilterResponse.Reject,
+                                  info     = plugin_info,
+                                  reason   = plugin_result.reason)
+            break
         except Exception as e:
             app.logger.warning(f"Plugin filter exception: {e}")
-            return sogs.plugin.FilterResponse.Reject
+            return FilterResult(response=sogs.plugin.FilterResponse.Reject, info=plugin_info)
 
-    return sogs.plugin.FilterResponse.Silent if silent else sogs.plugin.FilterResponse.Accept
+    if silent_result:
+        return silent_result
+    return result
 
 
 @needs_app_context
