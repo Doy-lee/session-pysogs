@@ -1,4 +1,4 @@
-"""SOGS Filter Plugin
+r"""SOGS Filter Plugin
 
   This plugin provides message filtering for profanity and non-Latin alphabets (Persian, Arabic,
   Cyrillic). When enabled, it can automatically reject messages or reply to users with warnings
@@ -94,6 +94,11 @@ Config file (.ini):
   See the example as follows:
 
 ```ini
+[log]
+; Log level for the plugin (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+; Can be overridden per-plugin in [plugin_sogs_filter] as 'log_level'
+; level = INFO
+
 [plugin]
 ; sogs_address    = tcp://127.0.0.1:22028
 ; sogs_pubkey_hex = xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
@@ -102,6 +107,7 @@ Config file (.ini):
 [plugin_sogs_filter]
 ; display_name     = SOGS Filter Plugin
 ; key_file         = plugin_sogs_filter_ed25519
+; log_level        = INFO
 
 ; If true, also filter moderator messages or otherwise moderator messages are always accepted
 ; filter_mods      = false
@@ -645,15 +651,17 @@ def entry_point():
     args     = parser.parse_args()
     ini_file = typing.cast(str, args.plugin_sogs_filter_ini_path)
 
-    # Setup logger
+    # Set logger name
     sogs.plugin.log.name = '[SOGS FILTER]'
-    sogs.plugin.log.addHandler(sogs.plugin.console_log_handler)
 
     # Load common INI configuration
-    sogs.plugin.log.info(f"Loading SOGS Filter plugin config from {ini_file}")
     config: sogs.plugin.PluginConfigFromINI = sogs.plugin.Plugin.load_ini_from_path(ini_path=ini_file, default_display_name='SOGS Filter Plugin')
     if not config.success:
         return
+
+    # Configure logging with level from .ini (must be after config load)
+    sogs.plugin.setup_plugin_logging(ini=config.ini, plugin_section='plugin_sogs_filter')
+    sogs.plugin.log.info(f"Loading SOGS Filter plugin config from {ini_file}")
 
     try:
         ini_parser = configparser.RawConfigParser(strict=False)

@@ -13,9 +13,39 @@ from typing          import Callable, Dict, List, Optional, Tuple, Union, Tuple
 from datetime        import timedelta
 from sogs.model.post import Post
 
-log                 = logging.Logger('PLUGIN')
+log                 = logging.getLogger('PLUGIN')
 console_log_handler = logging.StreamHandler()
 console_log_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s'))
+
+def setup_plugin_logging(ini: Optional[configparser.ConfigParser] = None, plugin_section: Optional[str] = None):
+    """Configure plugin logging with optional colored output.
+
+    Log level is determined by (in order of precedence):
+      1. [plugin_<name>] section's 'log_level' field (if plugin_section provided and field exists)
+      2. [log] section's 'level' field (if exists in ini)
+      3. Default: INFO
+
+    If coloredlogs is installed, colored output will be used. Otherwise falls back to
+    the standard console handler.
+
+    Args:
+        ini: Parsed ConfigParser from the plugin's .ini file
+        plugin_section: The plugin-specific section name (e.g., 'plugin_sogs_filter')
+    """
+    level = 'INFO'
+    if ini:
+        if plugin_section and ini.has_option(plugin_section, 'log_level'):
+            level = ini.get(plugin_section, 'log_level')
+        elif ini.has_option('log', 'level'):
+            level = ini.get('log', 'level')
+
+    log.setLevel(level)
+
+    try:
+        import coloredlogs
+        coloredlogs.install(milliseconds=True, isatty=True, logger=log, level=level)
+    except ImportError:
+        log.addHandler(console_log_handler)
 
 class FilterResponse(enum.Enum):
     Accept = "OK"     # Accept message, it will be posted and visible in the room
