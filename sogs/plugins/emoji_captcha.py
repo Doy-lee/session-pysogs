@@ -559,8 +559,8 @@ class CaptchaManager:
     data_dir:     str           = "./.sogs/plugins/captcha"
     batch_size:   int           = 32
     captcha_list: List[Captcha] = dataclasses.field(default_factory=list)
-    font_path:    str           = os.path.dirname(os.path.abspath(__file__)) + '/NotoColorEmoji.ttf'
-    font_size:    int           = 109 # Suitable font size specifically for NotoColorEmoji
+    font_path:    str           = os.path.dirname(os.path.abspath(__file__)) + '/emoji_captcha_noto_color_emoji.ttf'
+    font_size:    int           = 109 # Suitable font size specifically for emoji_captcha_noto_color_emoji.ttf
     width:        int           = 400
     height:       int           = 400
 
