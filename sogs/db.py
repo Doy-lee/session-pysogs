@@ -218,14 +218,16 @@ def _fix_plugin_keys(dbconn):
     """Verify and fix plugin x25519 keys derived from ed25519 keys."""
     import nacl.bindings as sodium
     from .db import query
-    print("Verifying plugin keys...")
+    config.logger.info("Verifying plugin keys...")
     plugins = query("SELECT id, name, ed_key, x_key FROM plugins", dbconn=dbconn).all()
     if not plugins:
         return
 
-    # Header
-    print(f"{'ID':<5} {'Name':<32} {'Status':<10}")
-    print("-" * 80)
+    # Build table output as a single string
+    table_lines: List[str] = [
+        f"{'ID':<5} {'Name':<32} {'Status':<10}",
+        "-" * 80,
+    ]
     fixed_count                              = 0
     ok_count                                 = 0
     invalid_plugins: List[Tuple[str, bytes]] = []
@@ -235,8 +237,6 @@ def _fix_plugin_keys(dbconn):
         name         = typing.cast(str, plugin['name']) or f"Plugin {plugin_id}"
         ed_key       = typing.cast(bytes, plugin['ed_key'])
         stored_x_key = typing.cast(bytes, plugin['x_key'])
-        if index:
-            print()
 
         derived_x_key: bytes = b''
         try:
@@ -246,8 +246,8 @@ def _fix_plugin_keys(dbconn):
 
         ed_chunks: List[str] = [ed_key[i:i+4].hex() for i in range(0, 32, 4)]
         if len(derived_x_key) == 0:
-            print(f"{plugin_id:<5} {name:<32} {'⛔ INVALID':<10}")
-            print(f"        Ed25519: {' '.join(ed_chunks)} (Ed25519 key is not valid)")
+            table_lines.append(f"{plugin_id:<5} {name:<32} {'⛔ INVALID':<10}")
+            table_lines.append(f"        Ed25519: {' '.join(ed_chunks)} (Ed25519 key is not valid)")
             invalid_plugins.append((name, ed_key))
         else:
             # Format keys in 4-byte chunks for display
@@ -255,30 +255,33 @@ def _fix_plugin_keys(dbconn):
             derived_chunks: List[str] = [derived_x_key[i:i+4].hex() for i in range(0, 32, 4)]
 
             if stored_x_key == derived_x_key:
-                print(f"{plugin_id:<5} {name:<32} {'✅ OK':<10}")
-                print(f"        Ed25519: {' '.join(ed_chunks)}")
-                print(f"        X25519:  {' '.join(stored_chunks)}")
+                table_lines.append(f"{plugin_id:<5} {name:<32} {'✅ OK':<10}")
+                table_lines.append(f"        Ed25519: {' '.join(ed_chunks)}")
+                table_lines.append(f"        X25519:  {' '.join(stored_chunks)}")
                 ok_count += 1
             else:
-                print(f"{plugin_id:<5} {name:<32} {'⚠️ MISMATCH':<10}")
-                print(f"        Ed25519 (stored):    {' '.join(ed_chunks)}")
-                print(f"        X25519  (stored):    {' '.join(stored_chunks)}")
-                print(f"        X25519 (derived):    {' '.join(derived_chunks)}")
+                table_lines.append(f"{plugin_id:<5} {name:<32} {'⚠️ MISMATCH':<10}")
+                table_lines.append(f"        Ed25519 (stored):    {' '.join(ed_chunks)}")
+                table_lines.append(f"        X25519  (stored):    {' '.join(stored_chunks)}")
+                table_lines.append(f"        X25519 (derived):    {' '.join(derived_chunks)}")
 
                 # Fix the key
                 with transaction(dbconn):
                     query("UPDATE plugins SET x_key = :x_key WHERE id = :id", dbconn=dbconn, x_key=derived_x_key, id=plugin_id)
-                print(f"        FIXED: Updated x_key to derived value")
+                table_lines.append(f"        FIXED: Updated x_key to derived value")
                 fixed_count += 1
 
-    print("-" * 80)
-    print(f"Summary: {fixed_count} plugin(s) fixed, {ok_count} plugin(s) OK, {len(invalid_plugins)} plugin(s) invalid")
+    table_lines.append("-" * 80)
+    table_lines.append(f"Summary: {fixed_count} plugin(s) fixed, {ok_count} plugin(s) OK, {len(invalid_plugins)} plugin(s) invalid")
+
+    # Log the complete table as one multi-line message
+    config.logger.info("\n" + "\n".join(table_lines))
 
     if len(invalid_plugins):
-        print(("\nThe following plugin(s) have invalid Ed25519 public keys registered. These plugins need to\n"
-               "regenerate their keys and re-register to the SOGS server\n"))
+        config.logger.error("\nThe following plugin(s) have invalid Ed25519 public keys registered. These plugins need to\n"
+               "regenerate their keys and re-register to the SOGS server\n")
         for it in invalid_plugins:
-            print(f"  Plugin '{it[0]}': python3 -m sogs --delete-plugin {it[1].hex()}")
+            config.logger.error(f"  Plugin '{it[0]}': python3 -m sogs --delete-plugin {it[1].hex()}")
         sys.exit(1)
 
 def init_engine(*args, **kwargs):
@@ -372,7 +375,7 @@ def init_engine(*args, **kwargs):
             ("Listen Address", config.OMQ_LISTEN),
             ("Database", config.DB_URL),
         ])
-        print("\n" + "\n".join(info_lines))
+        config.logger.info("\n" + "\n".join(info_lines))
         _fix_plugin_keys(engine.connect())
 
 
