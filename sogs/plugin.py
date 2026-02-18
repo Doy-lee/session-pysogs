@@ -8,7 +8,7 @@ import enum
 import typing_extensions
 import configparser
 
-from .types import SessionID, MessageID, bt_value, PluginInsertMessage, RoomAddPostRequest, ReactionPosted, MessagePosted
+from .types import SessionID, MessageID, RoomToken, bt_value, PluginInsertMessage, RoomAddPostRequest, ReactionPosted, MessagePosted
 from typing          import Callable, Dict, List, Optional, Tuple, Union, Tuple
 from datetime        import timedelta
 from sogs.model.post import Post
@@ -110,7 +110,7 @@ class FilterResult:
 class RoomReadRequest:
     room_id:    int
     room_name:  str
-    room_token: bytes
+    room_token: RoomToken
     session_id: SessionID
     user_id:    int
 
@@ -118,7 +118,7 @@ class RoomReadRequest:
     def from_bencode(cls, src: Dict[bytes, bt_value]):
         result = RoomReadRequest(room_id     = typing.cast(int, src[b'room_id']),
                                  room_name  = typing.cast(bytes, src[b'room_name']).decode('utf-8'),
-                                 room_token = typing.cast(bytes, src[b'room_token']),
+                                 room_token = typing.cast(bytes, src[b'room_token']).decode('utf-8'),
                                  session_id = bytes.fromhex(typing.cast(bytes, src[b'session_id']).decode('utf-8')),
                                  user_id    = typing.cast(int, src[b'user_id']),)
         return result
@@ -133,7 +133,7 @@ class SetUserRoomPermissionsResponse(enum.Enum):
 @dataclasses.dataclass
 class SetUserRoomPermissions:
     room_id:         Optional[int]       = None
-    room_token:      Optional[bytes]     = None
+    room_token:      Optional[RoomToken] = None
     user_id:         Optional[int]       = None
     user_session_id: Optional[SessionID] = None
     accessible:      Optional[bool]      = None
@@ -147,7 +147,7 @@ class SetUserRoomPermissions:
         if b'room_id' in src:
             result.room_id = typing.cast(int, src[b'room_id'])
         elif b'room_token' in src:
-            result.room_token = typing.cast(bytes, src[b'room_token'])
+            result.room_token = typing.cast(bytes, src[b'room_token']).decode('utf-8')
 
         if b'user_id' in src:
             result.user_id = typing.cast(int, src[b'user_id'])
@@ -539,7 +539,7 @@ class Plugin:
         return FilterResult.accept()
 
     def set_user_room_permissions(self,
-                                  room:         Optional[Union[bytes, int]]     = None,
+                                  room:         Optional[Union[RoomToken, int]] = None,
                                   user:         Optional[Union[SessionID, int]] = None,
                                   sec_from_now: Optional[int]                   = None,
                                   accessible:   Optional[bool]                  = None,
@@ -558,7 +558,7 @@ class Plugin:
         # NOTE: Set the room
         if isinstance(room, int):
             req.room_id = room
-        elif isinstance(room, bytes):
+        elif isinstance(room, RoomToken):
             req.room_token = room
         else:
             log.warning(f"Invalid room identifier type '{type(room).__name__}': expected bytes or int")
@@ -632,7 +632,7 @@ class Plugin:
         return result
 
     def post_message(self,
-                     room_token:           bytes,
+                     room_token:           RoomToken,
                      body:                 str,
                      *,
                      whisper_to:           Optional[int] = None,
@@ -688,7 +688,7 @@ class Plugin:
         return result
 
     def _insert_message(self,
-                        room_token:       bytes,
+                        room_token:       RoomToken,
                         session_id:       SessionID,
                         message:          bytes,
                         sig:              bytes,
@@ -713,13 +713,13 @@ class Plugin:
         msg_id = typing.cast(MessageID, resp[b'msg_id'])
         return msg_id
 
-    def post_reactions(self, room_token: bytes, msg_id: MessageID, *reactions: str) -> Dict[bytes, bt_value]:
+    def post_reactions(self, room_token: RoomToken, msg_id: MessageID, *reactions: str) -> Dict[bytes, bt_value]:
         conn: oxenmq.ConnectionID = self._require_conn_established()
         req = {b"room_token": room_token, b"msg_id": msg_id, b"reactions": reactions}
         log.debug(f"Posting {len(reactions)} reaction(s) to message {msg_id} in room '{room_token.decode()}'")
         return oxenc.bt_deserialize(self.omq.request_future( conn, "plugin.post_reactions", oxenc.bt_serialize(req), request_timeout=timedelta(seconds=5)).get()[0])
 
-    def remove_reactions(self, room_token: bytes, msg_id: MessageID, *reactions: str):
+    def remove_reactions(self, room_token: RoomToken, msg_id: MessageID, *reactions: str):
         req = {b"room_token": room_token, b"msg_id": msg_id, b"reactions": reactions}
         log.debug(f"Removing {len(reactions)} reaction(s) from message {msg_id} in room '{room_token.decode()}'")
 

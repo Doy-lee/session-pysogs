@@ -551,7 +551,7 @@ class SOGSFilterPlugin(Plugin):
         if req.is_mod and not self.filter_mods:
             return FilterResult.accept()
 
-        room_token: str = req.room_token.decode('utf-8')
+        room_token: str = req.room_token
         sogs.plugin.log.debug(f"Filtering message in room '{room_token}' from user {req.user_id}")
 
         # Retrieve the filter for this room

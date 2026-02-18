@@ -12,7 +12,7 @@ from typing import Dict, List, Union, Optional
 #   OMQ Session ID response => b"15aaaa.."       (66 bytes)
 #   `SessionID`             => b"\x15\xaa\xaa.." (33 bytes)
 SessionID    = bytes
-RoomToken    = bytes
+RoomToken    = str
 RoomTokenStr = str
 TimestampS   = float
 MessageID    = int
@@ -45,7 +45,7 @@ class RoomAddPostRequest:
     """When a message is posted to a room, a request describing the post to be added is created with
     this structure and relayed to plugins for running the pre/post message hooks with this data"""
     room_id:      int
-    room_token:   bytes
+    room_token:   RoomToken
     room_name:    str
     user_id:      int
     session_id:   SessionID
@@ -62,7 +62,7 @@ class RoomAddPostRequest:
     def from_dict(src: Dict[bytes, bt_value]) -> "RoomAddPostRequest":
         result = RoomAddPostRequest(room_id      = typing.cast(int,   src[b'room_id']),
                                     room_name    = typing.cast(bytes, src[b'room_name']).decode('utf-8'),
-                                    room_token   = typing.cast(bytes, src[b'room_token']),
+                                    room_token   = typing.cast(bytes, src[b'room_token']).decode('utf-8'),
                                     user_id      = typing.cast(int,   src[b'user_id']),
                                     session_id   = bytes.fromhex(typing.cast(bytes, src[b'session_id']).decode('utf-8')),
                                     message_data = typing.cast(bytes, src[b'message_data']),
@@ -91,7 +91,7 @@ class RoomAddPostRequest:
     def to_dict(self) -> Dict[bytes, bt_value]:
         result: Dict[bytes, bt_value] = {b'room_id':          self.room_id,
                                          b'room_name':        self.room_name.encode('utf-8'),
-                                         b'room_token':       self.room_token,
+b'room_token':       self.room_token.encode('utf-8'),
                                          b'user_id':          self.user_id,
                                          b'session_id':       self.session_id.hex().encode('utf-8'),
                                          b'message_data':     self.message_data,
@@ -114,7 +114,7 @@ class RoomAddPostRequest:
 @dataclasses.dataclass
 class PluginInsertMessage:
     """Message insertion request from plugin to SOGS. Minimal set of fields needed for plugin-inserted messages."""
-    room_token:       bytes
+    room_token:       RoomToken
     session_id:       SessionID  # 25-blinded x25519 pubkey as raw 33 bytes
     message_data:     bytes
     sig:              bytes
@@ -127,7 +127,7 @@ class PluginInsertMessage:
     @staticmethod
     def from_dict(src: Dict[bytes, bt_value]) -> "PluginInsertMessage":
         result = PluginInsertMessage(
-            room_token       = typing.cast(bytes, src[b'room_token']),
+            room_token       = typing.cast(bytes, src[b'room_token']).decode('utf-8'),
             session_id       = bytes.fromhex(typing.cast(bytes, src[b'session_id']).decode('utf-8')),
             message_data     = typing.cast(bytes, src[b'message_data']),
             sig              = bytes.fromhex(typing.cast(bytes, src[b'sig']).decode('utf-8')),
@@ -157,7 +157,7 @@ class PluginInsertMessage:
 
     def to_dict(self) -> Dict[bytes, bt_value]:
         result: Dict[bytes, bt_value] = {
-            b'room_token':       self.room_token,
+            b'room_token':       self.room_token.encode('utf-8'),
             b'session_id':       self.session_id.hex().encode('utf-8'),
             b'message_data':     self.message_data,
             b'sig':              self.sig.hex().encode('utf-8'),
@@ -199,7 +199,7 @@ class ReactionPosted:
             user_id    = typing.cast(int, src[b'user_id']),
             session_id = bytes.fromhex(typing.cast(bytes, src[b'session_id']).decode('utf-8')),
             room_id    = typing.cast(int, src[b'room_id']),
-            room_token = typing.cast(bytes, src[b'room_token']),
+            room_token = typing.cast(bytes, src[b'room_token']).decode('utf-8'),
             room_name  = typing.cast(bytes, src[b'room_name']).decode('utf-8'),
             is_mod     = bool(typing.cast(int, src[b'is_mod'])),
             is_admin   = bool(typing.cast(int, src[b'is_admin'])),
@@ -217,7 +217,7 @@ class ReactionPosted:
             b'user_id':    self.user_id,
             b'session_id': self.session_id.hex().encode('utf-8'),
             b'room_id':    self.room_id,
-            b'room_token': self.room_token,
+            b'room_token': self.room_token.encode('utf-8'),
             b'room_name':  self.room_name.encode('utf-8'),
             b'is_mod':     int(self.is_mod),
             b'is_admin':   int(self.is_admin),
@@ -231,7 +231,7 @@ class MessagePosted:
     """Event sent to plugins when a message is posted to a room"""
     id:              MessageID       # Message ID
     room:            int             # Room ID
-    room_token:      RoomToken       # Room token (bytes)
+    room_token:      RoomToken       # Room token
     user:            int             # User ID
     session_id:      SessionID       # 33-byte 25-blinded Session ID
     data:            bytes           # Raw message data
@@ -255,7 +255,7 @@ class MessagePosted:
         result = MessagePosted(
             id              = typing.cast(int, src[b'id']),
             room            = typing.cast(int, src[b'room']),
-            room_token      = typing.cast(bytes, src[b'room_token']),
+            room_token      = typing.cast(bytes, src[b'room_token']).decode('utf-8'),
             user            = typing.cast(int, src[b'user']),
             session_id      = typing.cast(bytes, src[b'session_id']),
             data            = typing.cast(bytes, src[b'data']),
@@ -286,7 +286,7 @@ class MessagePosted:
         result: Dict[bytes, bt_value] = {
             b'id':              self.id,
             b'room':            self.room,
-            b'room_token':      self.room_token,
+            b'room_token':      self.room_token.encode('utf-8'),
             b'user':            self.user,
             b'session_id':      self.session_id.hex().encode('utf-8'),
             b'data':            self.data,

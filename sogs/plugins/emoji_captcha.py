@@ -670,13 +670,13 @@ class EmojiCaptchaPlugin(sogs.plugin.Plugin):
         log_line: str = "Plugin initialised:\n  " + "\n  ".join(sogs.utils.pretty_format_key_value_list(desc_lines))
         sogs.plugin.log.info(log_line)
 
-    def get_user(self, session_id: bytes, room_token: bytes) -> Optional[UserCaptchaState]:
+    def get_user(self, session_id: bytes, room_token: sogs.types.RoomToken) -> Optional[UserCaptchaState]:
         result = None
         if session_id in self.users and room_token in self.users[session_id]:
             result = self.users[session_id][room_token]
         return result
 
-    def get_or_make_user(self, session_id: bytes, room_token: bytes) -> UserCaptchaState:
+    def get_or_make_user(self, session_id: bytes, room_token: sogs.types.RoomToken) -> UserCaptchaState:
         result = self.users.setdefault(session_id, {}).setdefault(room_token, UserCaptchaState())
         return result
 
@@ -699,14 +699,14 @@ class EmojiCaptchaPlugin(sogs.plugin.Plugin):
         result: sogs.types.bt_value = self.tick(room_token=req.room_token, user_id=req.user_id, session_id=req.session_id, room_name=req.room_name)
         return result
 
-    def _ensure_refresh_emoji_on_captcha(self, room_token: bytes, user: UserCaptchaState, msg_id: sogs.types.MessageID):
+    def _ensure_refresh_emoji_on_captcha(self, room_token: sogs.types.RoomToken, user: UserCaptchaState, msg_id: sogs.types.MessageID):
         captchas_remaining: int  = self.retry_limit - user.captcha_attempts
         if not user.posted_captcha_refresh_emoji_applied and captchas_remaining > 1:
             react_resp: Dict[bytes, sogs.types.bt_value] = self.post_reactions(room_token, msg_id, self.refresh_emoji)
             if b'status' in react_resp and react_resp[b'status'] == b'OK':
                 user.posted_captcha_refresh_emoji_applied = True
 
-    def tick(self, room_token: bytes, user_id: int, session_id: sogs.types.SessionID, room_name: str) -> sogs.types.bt_value:
+    def tick(self, room_token: sogs.types.RoomToken, user_id: int, session_id: sogs.types.SessionID, room_name: str) -> sogs.types.bt_value:
         """Executes the CAPTCHA lifecycle for the specified user and room
 
         This is periodically called to progress the CAPTCHA lifecycle for the user:
@@ -848,7 +848,7 @@ class EmojiCaptchaPlugin(sogs.plugin.Plugin):
 
         return self._post_challenge(room_token, user_id, session_id, room_name)
 
-    def _post_challenge(self, room_token: bytes, user_id: int, session_id: sogs.types.SessionID, room_name: str) -> sogs.types.bt_value:
+    def _post_challenge(self, room_token: sogs.types.RoomToken, user_id: int, session_id: sogs.types.SessionID, room_name: str) -> sogs.types.bt_value:
         """Generate and post new CAPTCHA challenge to user."""
         user: UserCaptchaState                    = self.get_or_make_user(session_id, room_token)
         user.posted_captcha_msg_id                = None

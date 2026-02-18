@@ -43,7 +43,7 @@ class SlashTestPlugin(Plugin):
     def handle_get_file(self, request: Dict[bytes, bt_value], command_parts: List[str]) -> bool:
         print(f"/get_file pre-insertion command: {command_parts}")
 
-        room_token = typing.cast(bytes, request[b'room_token'])
+        room_token = typing.cast(bytes, request[b'room_token']).decode('utf-8')
         print(f"room_token for file upload: {room_token}")
 
         file_meta = self.upload_file("test.jpg", room_token)

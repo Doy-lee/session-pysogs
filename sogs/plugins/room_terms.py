@@ -185,9 +185,9 @@ class RoomTermsPlugin(Plugin):
                 break
             if len(room_configs_desc):
                 room_configs_desc += ", "
-            room_configs_desc += token.decode('utf-8')
+            room_configs_desc += token
 
-        wildcard_config                   = self.get_config_for_room(b'*')
+        wildcard_config                   = self.get_config_for_room('*')
         desc_lines: List[Tuple[str, str]] = self.describe_config()
         desc_lines.extend([
             ("Accept Reaction", wildcard_config.accept_reaction or self.DEFAULT_ACCEPT_REACTION),
@@ -210,8 +210,8 @@ class RoomTermsPlugin(Plugin):
         )
 
         # Override with wildcard config
-        if b'*' in self.room_configs:
-            wildcard = self.room_configs[b'*']
+        if '*' in self.room_configs:
+            wildcard = self.room_configs['*']
             if wildcard.terms is not None:
                 result.terms = wildcard.terms
             if wildcard.accept_reaction is not None:
@@ -222,7 +222,7 @@ class RoomTermsPlugin(Plugin):
                 result.write_timeout = wildcard.write_timeout
 
         # Override with specific room config
-        if room_token != b'*' and room_token in self.room_configs:
+        if room_token != '*' and room_token in self.room_configs:
             specific = self.room_configs[room_token]
             if specific.terms is not None:
                 result.terms = specific.terms
@@ -362,7 +362,7 @@ def entry_point():
             if ini_parser.has_option(section, 'write_timeout'):
                 room_config.write_timeout = ini_parser.getint(section, 'write_timeout')
 
-            room_configs[room_token.encode()] = room_config
+            room_configs[room_token] = room_config
 
         # Instantiate plugin
         plugin = RoomTermsPlugin(sogs_address = config.sogs_address,
