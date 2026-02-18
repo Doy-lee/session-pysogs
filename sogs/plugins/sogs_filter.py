@@ -19,7 +19,7 @@ Getting Started:
   config file, add to the [uwsgi] section:
 
     [uwsgi]
-    mule = sogs.plugins.sogs_filter
+    mule = sogs.plugins.sogs_filter:entry_point
     env  = PLUGIN_SOGS_FILTER_INI_PATH=<path/to/plugin/config.ini>
 
   Note that the plugin can be parameterized via the following methods:
@@ -50,8 +50,6 @@ Getting Started:
                     --plugin-subscribe true
 
 Architecture:
-  - Integrates with SOGS as a plugin via the Plugin base class
-  - Overrides filter() to intercept and validate all room messages
   - Uses better_profanity library for profanity detection
   - Uses regex patterns for alphabet/script detection
   - Supports hierarchical reply configuration (global -> room -> filter type -> language)
@@ -644,7 +642,7 @@ def entry_point():
     import argparse
 
     # Argument parser
-    parser = argparse.ArgumentParser(description='SOGS Filter')
+    parser = argparse.ArgumentParser(description='SOGS Filter Plugin')
     _ = parser.add_argument('--plugin_sogs_filter_ini_path', type=str,
                             default=os.environ.get('PLUGIN_SOGS_FILTER_INI_PATH', 'sogs_filter.ini'),
                             help='Path to the configuration .ini file (default: sogs_filter.ini or set PLUGIN_SOGS_FILTER_INI_PATH env)')

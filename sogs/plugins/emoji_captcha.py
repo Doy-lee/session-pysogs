@@ -20,7 +20,7 @@ Getting Started:
   config file, add to the [uwsgi] section:
 
     [uwsgi]
-    mule = sogs.plugins.emoji_captcha
+    mule = sogs.plugins.emoji_captcha:entry_point
     env  = PLUGIN_EMOJI_CAPTCHA_INI_PATH=<path/to/plugin/config.ini>
 
   Note that the plugin can be parameterized via the following methods:
