@@ -1519,7 +1519,7 @@ class Room:
                                                     user_id    = user.id,
                                                     session_id = bytes.fromhex(user.using_id),
                                                     room_id    = self.id,
-                                                    room_token = self.token.encode(),
+                                                    room_token = self.token,
                                                     room_name  = self.name,
                                                     is_mod     = is_mod,
                                                     is_admin   = is_admin,)

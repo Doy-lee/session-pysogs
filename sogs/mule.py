@@ -42,6 +42,7 @@ plugin_conns: Dict[PluginID, oxenmq.ConnectionID] = {}
 class PluginMetadata:
     id:     PluginID = 0
     name:   str      = ''
+    ed_key: bytes   = b''
 
     # A plugin manifests itself as a user in the community. When a plugin identifies itself to the
     # SOGS (e.g. starts hello handshake), the user account for the plugin gets added as a
@@ -65,7 +66,7 @@ plugin_pre_commands:  Dict[str, Set[PluginID]] = {}
 plugin_post_commands: Dict[str, Set[PluginID]] = {}
 
 @dataclasses.dataclass
-class PluginInfo:
+class PluginRowFields:
     required: bool  = False
     name:     str   = ''
     ed_key:   bytes = b''
@@ -73,8 +74,8 @@ class PluginInfo:
 @dataclasses.dataclass
 class FilterResult:
     response: sogs.plugin.FilterResponse
-    info:     Optional[PluginInfo] = None
-    reason:   Optional[str]        = None  # Human-readable description of why the message was filtered
+    info:     Optional[PluginRowFields] = None
+    reason:   Optional[str]             = None  # Human-readable description of why the message was filtered
 
 # not changing the keys, since this is just for fixing the values if they
 # need to be str and not bytes
@@ -133,7 +134,7 @@ def inproc_fail(connid: oxenmq.ConnectionID, reason: str):  # pyright: ignore[re
 
 @needs_app_context
 @log_exceptions
-def get_relevant_plugins(where_clause: str, room_id: Optional[int] = None, room_token: Optional[str] = None) -> Dict[PluginID, PluginInfo]:
+def get_relevant_plugins(where_clause: str, room_id: Optional[int] = None, room_token: Optional[str] = None) -> Dict[PluginID, PluginRowFields]:
     """
     Retrieve plugins that match the given filter criteria from both global and room-specific contexts.
 
@@ -155,7 +156,7 @@ def get_relevant_plugins(where_clause: str, room_id: Optional[int] = None, room_
         lookup fails. The required status is True if the plugin is marked as required in either
         the global or room-specific context (logical OR of both settings).
     """
-    result: Dict[PluginID, PluginInfo] = {}
+    result: Dict[PluginID, PluginRowFields] = {}
     with db.transaction():
         # Resolve room_token to room_id if needed
         if room_token and not room_id:
@@ -170,7 +171,11 @@ def get_relevant_plugins(where_clause: str, room_id: Optional[int] = None, room_
         rows      = query(query_str)
         for row in rows:
             required          = True if row['required'] and row['required'] == 1 else False
-            result[row['id']] = PluginInfo(required=required, name=typing.cast(str, row['name']), ed_key=typing.cast(bytes, row['ed_key']))
+            plugin_fields          = PluginRowFields()
+            plugin_fields.required = required
+            plugin_fields.name     = typing.cast(str, row['name']) if len(typing.cast(str, row['name'])) else '(unnamed plugin)'
+            plugin_fields.ed_key   = typing.cast(bytes, row['ed_key'])
+            result[row['id']]      = plugin_fields
 
         # Query room-specific plugins and merge with global results
         if room_id:
@@ -186,9 +191,13 @@ def get_relevant_plugins(where_clause: str, room_id: Optional[int] = None, room_
                     result[plugin_id].required |= required
                 else:
                     # This plugin is only applicable in this room, we'll lookup its human readable name
-                    lookup            = "SELECT name, required, ed_key FROM plugins WHERE id = :id AND  " + where_clause
-                    plugin_row        = query(lookup, id=plugin_id).first()
-                    result[plugin_id] = PluginInfo(name=typing.cast(str, plugin_row['name']), required=required, ed_key=typing.cast(bytes, plugin_row['ed_key']))
+                    lookup                 = "SELECT name, required, ed_key FROM plugins WHERE id = :id AND  " + where_clause
+                    plugin_row             = query(lookup, id=plugin_id).first()
+                    plugin_fields          = PluginRowFields()
+                    plugin_fields.required = required
+                    plugin_fields.name     = typing.cast(str, plugin_row['name']) if len(typing.cast(str, plugin_row['name'])) else '(unnamed plugin)'
+                    plugin_fields.ed_key   = typing.cast(bytes, plugin_row['ed_key'])
+                    result[plugin_id]      = plugin_fields
     return result
 
 # Commands from SOGS/uwsgi
@@ -271,24 +280,23 @@ def request_read(m: oxenmq.Message):
     a whisper to the user, if desired, which sogs will deliver.
     """
     command = '/request_read'
-    retval = bt_serialize("OK")  # always, for now
+    retval  = bt_serialize("OK")  # always, for now
     if command not in plugin_pre_commands:
         return retval
-    if len(plugin_pre_commands[command]) != 1:
-        return retval
 
-    plugin_id = list(plugin_pre_commands[command])[0]
-    if plugin_id not in plugin_conns:
-        return retval
+    plugin_list: Set[PluginID] = plugin_pre_commands[command]
 
-    try:
-        app.logger.debug(f"Giving command 'request_read' to plugin (id={plugin_id})")
-        _ = o.omq.request_future(plugin_conns[plugin_id], "plugin.request_read", *m.data(), request_timeout=timedelta(seconds=1)).get()
-    except TimeoutError as e:
-        app.logger.warning(f"Timeout from plugin (id={plugin_id}) handling request_read: {e}")
-    except Exception:
-        # TODO: Should this fail the whole command?
-        pass
+    for plugin_id in plugin_list:
+        if plugin_id not in plugin_conns:
+            continue
+
+        conn:     oxenmq.ConnectionID = plugin_conns[plugin_id]
+        metadata: PluginMetadata      = plugin_conn_info[conn]
+        try:
+            app.logger.debug(f"Relaying request read to {metadata.name} (id={plugin_id}, ed_key={metadata.ed_key.hex()})")
+            _ = o.omq.request_future(plugin_conns[plugin_id], "plugin.request_read", *m.data(), request_timeout=timedelta(seconds=1)).get()
+        except Exception as e:
+            app.logger.warning(f"Request read error when sent to {metadata.name} (id={plugin_id}, ed_key={metadata.ed_key.hex()}): {e}")
 
     return retval
 
@@ -306,7 +314,7 @@ def message_edited(m: oxenmq.Message):
 @log_exceptions
 def plugin_filter_message(req: sogs.types.RoomAddPostRequest) -> FilterResult:
     result                                 = FilterResult(response=sogs.plugin.FilterResponse.Accept)
-    plugin_ids: Dict[PluginID, PluginInfo] = get_relevant_plugins("approver = 1", room_id=req.room_id)
+    plugin_ids: Dict[PluginID, PluginRowFields] = get_relevant_plugins("approver = 1", room_id=req.room_id)
     if len(plugin_ids) == 0:
         return result
 
@@ -315,7 +323,7 @@ def plugin_filter_message(req: sogs.types.RoomAddPostRequest) -> FilterResult:
     # If the plugin is required for the filtering step and we don't have have an OMQ connection for
     # it to forward the message to for filtering, then we reject the message outright.
     for id in plugin_ids:
-        info: PluginInfo = plugin_ids[id]
+        info: PluginRowFields = plugin_ids[id]
         if info.required and id not in plugin_conns:
             app.logger.warning(f"Message rejected because required plugin '{info.name}' (id={id}, ed_key={info.ed_key.hex()}) was required but has not connected to SOGS yet")
             return FilterResult(response=sogs.plugin.FilterResponse.Reject, info=info)
@@ -333,7 +341,7 @@ def plugin_filter_message(req: sogs.types.RoomAddPostRequest) -> FilterResult:
     silent_result: Optional[FilterResult] = None
     for pending in pending_requests:
         future:      oxenmq.ResultFuture = pending[0]
-        plugin_info: PluginInfo          = plugin_ids[pending[1]]
+        plugin_info: PluginRowFields          = plugin_ids[pending[1]]
         try:
             response: List[bytes] = future.get()
             if len(response) != 1:
@@ -471,24 +479,26 @@ def setup_omq():
 @needs_app_context
 @log_exceptions
 def plugin_hello(m: oxenmq.Message):
-    app.logger.debug(f"plugin.hello called with key: {m.conn.pubkey}")
-
     new_plugin_conn = False
     with db.transaction():
-
-        row = query("SELECT id, name FROM plugins WHERE x_key = :key", key=m.conn.pubkey).first()
+        row = query("SELECT id, name, ed_key FROM plugins WHERE x_key = :key", key=m.conn.pubkey).first()
         if row is None:
             # TODO: would like to close conn in this case, but oxenmq only allows close on outgoing conns.
-            app.logger.warning(f"No plugin found with key: {m.conn.pubkey}")
+            app.logger.warning(f"No plugin found with X25519 pubkey: {m.conn.pubkey.hex()}")
             return bt_serialize("NoSuchPlugin")
 
         plugin_conns[row['id']] = m.conn
         if m.conn not in plugin_conn_info:
             new_plugin_conn          = True
             plugin_conn_info[m.conn] = PluginMetadata()
+            metadata: PluginMetadata = plugin_conn_info[m.conn]
+            metadata.id              = typing.cast(int, row['id'])
+            metadata.name            = row['name']
+            metadata.ed_key          = row['ed_key']
+            if len(metadata.name) == 0:
+                metadata.name = "(unnamed plugin)"
 
         metadata: PluginMetadata = plugin_conn_info[m.conn]
-        metadata.id              = typing.cast(int, row['id'])
         try:
             if len(m.dataview()):
                 session_id: str = bt_deserialize(m.dataview()[0]).decode('ascii')
@@ -500,12 +510,14 @@ def plugin_hello(m: oxenmq.Message):
                 metadata.user = u
         except Exception as e:
             app.logger.warning(f"Plugin with id {row['id']} tried to register bad session_id.")
-            del plugin_conns[row['id']]
+            del plugin_conns[metadata.id]
             del plugin_conn_info[m.conn]
             return bt_serialize("BadSessionID")
 
-    new_str = "new " if new_plugin_conn else ""
-    app.logger.debug(f"Added {new_str}plugin connection for known key: {m.conn.pubkey}")
+    if new_plugin_conn:
+        app.logger.debug(f"{metadata.name} initial 'hello' received (id={metadata.id}, ed_key={metadata.ed_key.hex()})")
+    else:
+        app.logger.debug(f"{metadata.name} heartbeat 'hello' received (id={metadata.id}, ed_key={metadata.ed_key.hex()})")
 
     # inform the plugin that as far as we know this is a new connection from it, it should
     # re-register commands as desired
@@ -603,7 +615,7 @@ def plugin_set_user_room_permissions(m: oxenmq.Message):
         if req.room_id is not None:
             room = Room(id=req.room_id)
         elif req.room_token is not None:
-            room = Room(token=req.room_token.decode('ascii'))
+            room = Room(token=req.room_token)
         else:
             return bt_serialize("Must specify a room for user permissions change.")
 
@@ -692,7 +704,7 @@ def plugin_insert_message(m: oxenmq.Message) -> bytes:
     with db.transaction():
         # Lookup room to insert to
         try:
-            room = Room(token=req.room_token.decode("utf-8"))
+            room = Room(token=req.room_token)
         except Exception:
             app.logger.warning(f"{metadata.describe_str()} attempted to post message to a non-existing room...")
             return bt_serialize({b'error': "NoSuchRoom"})
@@ -831,15 +843,13 @@ def on_messages_deleted(m: oxenmq.Message):
 def relay_on_reaction_posted(m: oxenmq.Message):
     req_raw: List[bytes] = m.data()
     req                  = sogs.types.ReactionPosted.from_bencode(req_raw[0])
-    app.logger.debug(f"Reaction posted: {req}")
 
-    plugin_ids: Dict[PluginID, PluginInfo] = get_relevant_plugins("subscribe = 1", room_id=req.room_id)
+    plugin_ids: Dict[PluginID, PluginRowFields] = get_relevant_plugins("subscribe = 1", room_id=req.room_id)
     for id in plugin_ids:
-        plugin_info: PluginInfo = plugin_ids[id]
+        plugin_info: PluginRowFields = plugin_ids[id]
         if id in plugin_conns:
-            app.logger.debug(f"Sending reaction to plugin '{plugin_info.name}' (id={id}, required={plugin_info.required})")
+            app.logger.debug(f"Sending reaction posted '{req.reaction}' to {plugin_info.name} (id={id}, required={plugin_info.required}, from={req.session_id.hex()}, msg_id={req.msg_id}, room_token={req.room_token})")
             o.omq.send(plugin_conns[id], "plugin.reaction_posted", *req_raw)
-
 
 @needs_app_context
 @log_exceptions
@@ -858,7 +868,7 @@ def relay_on_message_posted(msg_id: MessageID):
     message_posted = sogs.types.MessagePosted(
         id              = typing.cast(int,               row['id']),
         room            = typing.cast(int,               row['room']),
-        room_token      = typing.cast(str,               row['room_token']).encode('utf-8'),
+        room_token      = typing.cast(str,               row['room_token']),
         user            = typing.cast(int,               row['user']),
         session_id      = bytes.fromhex(typing.cast(str, row['session_id'])),
         data            = typing.cast(bytes,             row['data']),
@@ -879,7 +889,7 @@ def relay_on_message_posted(msg_id: MessageID):
     )
 
     # Get relevant plugins for this room
-    plugin_ids: Dict[PluginID, PluginInfo] = get_relevant_plugins("subscribe = 1", room_id=message_posted.room)
+    plugin_ids: Dict[PluginID, PluginRowFields] = get_relevant_plugins("subscribe = 1", room_id=message_posted.room)
     if len(plugin_ids) == 0:
         return
 

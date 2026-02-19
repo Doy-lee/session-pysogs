@@ -716,12 +716,12 @@ class Plugin:
     def post_reactions(self, room_token: RoomToken, msg_id: MessageID, *reactions: str) -> Dict[bytes, bt_value]:
         conn: oxenmq.ConnectionID = self._require_conn_established()
         req = {b"room_token": room_token, b"msg_id": msg_id, b"reactions": reactions}
-        log.debug(f"Posting {len(reactions)} reaction(s) to message {msg_id} in room '{room_token.decode()}'")
+        log.debug(f"Posting {len(reactions)} reaction(s) to message {msg_id} in room '{room_token}'")
         return oxenc.bt_deserialize(self.omq.request_future( conn, "plugin.post_reactions", oxenc.bt_serialize(req), request_timeout=timedelta(seconds=5)).get()[0])
 
     def remove_reactions(self, room_token: RoomToken, msg_id: MessageID, *reactions: str):
         req = {b"room_token": room_token, b"msg_id": msg_id, b"reactions": reactions}
-        log.debug(f"Removing {len(reactions)} reaction(s) from message {msg_id} in room '{room_token.decode()}'")
+        log.debug(f"Removing {len(reactions)} reaction(s) from message {msg_id} in room '{room_token}'")
 
         conn: oxenmq.ConnectionID = self._require_conn_established()
         return oxenc.bt_deserialize(

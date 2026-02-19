@@ -91,7 +91,7 @@ class RoomAddPostRequest:
     def to_dict(self) -> Dict[bytes, bt_value]:
         result: Dict[bytes, bt_value] = {b'room_id':          self.room_id,
                                          b'room_name':        self.room_name.encode('utf-8'),
-b'room_token':       self.room_token.encode('utf-8'),
+                                         b'room_token':       self.room_token.encode('utf-8'),
                                          b'user_id':          self.user_id,
                                          b'session_id':       self.session_id.hex().encode('utf-8'),
                                          b'message_data':     self.message_data,
@@ -157,10 +157,10 @@ class PluginInsertMessage:
 
     def to_dict(self) -> Dict[bytes, bt_value]:
         result: Dict[bytes, bt_value] = {
-            b'room_token':       self.room_token.encode('utf-8'),
-            b'session_id':       self.session_id.hex().encode('utf-8'),
+            b'room_token':       self.room_token,
+            b'session_id':       self.session_id.hex(),
             b'message_data':     self.message_data,
-            b'sig':              self.sig.hex().encode('utf-8'),
+            b'sig':              self.sig.hex(),
             b'whisper_mods':     int(self.whisper_mods),
             b'relay_to_plugins': int(self.relay_to_plugins),
         }
@@ -213,12 +213,12 @@ class ReactionPosted:
     def to_dict(self) -> Dict[bytes, bt_value]:
         return {
             b'msg_id':     self.msg_id,
-            b'reaction':   self.reaction.encode('utf-8'),
+            b'reaction':   self.reaction,
             b'user_id':    self.user_id,
-            b'session_id': self.session_id.hex().encode('utf-8'),
+            b'session_id': self.session_id.hex(),
             b'room_id':    self.room_id,
-            b'room_token': self.room_token.encode('utf-8'),
-            b'room_name':  self.room_name.encode('utf-8'),
+            b'room_token': self.room_token,
+            b'room_name':  self.room_name,
             b'is_mod':     int(self.is_mod),
             b'is_admin':   int(self.is_admin),
         }
@@ -286,13 +286,13 @@ class MessagePosted:
         result: Dict[bytes, bt_value] = {
             b'id':              self.id,
             b'room':            self.room,
-            b'room_token':      self.room_token.encode('utf-8'),
+            b'room_token':      self.room_token,
             b'user':            self.user,
-            b'session_id':      self.session_id.hex().encode('utf-8'),
+            b'session_id':      self.session_id.hex(),
             b'data':            self.data,
             b'data_size':       self.data_size,
             b'signature':       self.signature,
-            b'posted':          str(self.posted).encode('utf-8'),
+            b'posted':          str(self.posted),
             b'seqno':           self.seqno,
             b'seqno_creation':  self.seqno_creation,
             b'seqno_data':      self.seqno_data,
