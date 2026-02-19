@@ -889,7 +889,6 @@ class EmojiCaptchaPlugin(sogs.plugin.Plugin):
         """Process reactions on CAPTCHA messages (answer, refresh, or incorrect)."""
         user: Optional[UserCaptchaState] = self.get_user(req.session_id, req.room_token)
         if not user:
-            sogs.plugin.log.warning(f'Reaction {req.reaction} from unknown user 0x{req.session_id.hex()} in room {req.room_token}')
             return
 
         if user.posted_captcha_msg_id == req.msg_id and user.posted_captcha:
