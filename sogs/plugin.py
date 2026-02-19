@@ -231,14 +231,14 @@ class Plugin:
     sogs_pubkey:          bytes
 
     # Default values
-    running:                    bool                                                                 = False
-    last_post_time:             int                                                                  = 0
-    pre_slash_handlers:         Dict[str, typing.Callable[[Dict[bytes, bt_value], List[str]], bool]] = dataclasses.field(default_factory=dict)
-    post_slash_handlers:        Dict[str, typing.Callable[[Dict[bytes, bt_value], List[str]], bool]] = dataclasses.field(default_factory=dict)
-    on_request_read_handler:    Optional[typing.Callable[[RoomReadRequest], bt_value]]               = None
-    on_reaction_posted_handler: Optional[typing.Callable[[oxenmq.Message, ReactionPosted], None]]    = None
-    on_message_posted_handler:  Optional[typing.Callable[[oxenmq.Message, MessagePosted], None]]     = None
-    conn:                       Optional[oxenmq.ConnectionID]                                        = None
+    running:                    bool                                                              = False
+    last_post_time:             int                                                               = 0
+    pre_slash_handlers:         Dict[str, typing.Callable[[RoomAddPostRequest, List[str]], bool]] = dataclasses.field(default_factory=dict)
+    post_slash_handlers:        Dict[str, typing.Callable[[RoomAddPostRequest, List[str]], bool]] = dataclasses.field(default_factory=dict)
+    on_request_read_handler:    Optional[typing.Callable[[RoomReadRequest], bt_value]]            = None
+    on_reaction_posted_handler: Optional[typing.Callable[[oxenmq.Message, ReactionPosted], None]] = None
+    on_message_posted_handler:  Optional[typing.Callable[[oxenmq.Message, MessagePosted], None]]  = None
+    conn:                       Optional[oxenmq.ConnectionID]                                     = None
 
     # Post initialised
     ed_pubkey:            bytes               = dataclasses.field(init=False) # 32 byte ed25519 public key
@@ -451,8 +451,8 @@ class Plugin:
         self.on_message_posted_handler = handler
 
     def handle_message_command(self, m: oxenmq.Message, pre_command: bool) -> bytes:
-        req = oxenc.bt_deserialize(m.dataview()[0])
-        msg = Post(raw=req[b"message_data"])
+        req = RoomAddPostRequest.from_bencode(m.dataview()[0])
+        msg = Post(raw=req.message_data)
 
         command_parts = typing.cast(str, msg.text).split(' ')
         if not command_parts: # shouldn't be possible, but false just to signal it happened
@@ -492,7 +492,7 @@ class Plugin:
             log.error(f"Failed to handle request_read for room '{room_info.room_token}': {traceback.format_exc()}")
         return oxenc.bt_serialize(True)
 
-    def register_command(self, command: str, handler: typing.Callable[[Dict[bytes, bt_value], List[str]], bool], pre_command: bool):
+    def register_command(self, command: str, handler: typing.Callable[[RoomAddPostRequest, List[str]], bool], pre_command: bool):
         """
         Registers a slash command with sogs.  `handler` will be invoked with the arguments
         from sogs as a dictionary, including "command": command.
@@ -513,7 +513,7 @@ class Plugin:
             command_type = "pre_commands" if pre_command else "post_commands"
             self.omq.send(self.conn, f"plugin.register_{command_type}", oxenc.bt_serialize({b"commands": [command]}))
 
-    def register_pre_command(self, command: str, handler: typing.Callable[[Dict[bytes, bt_value], List[str]], bool]):
+    def register_pre_command(self, command: str, handler: typing.Callable[[RoomAddPostRequest, List[str]], bool]):
         """
         Register a handler for slash commands that runs BEFORE the message is inserted.
 
@@ -523,7 +523,7 @@ class Plugin:
         """
         self.register_command(command, handler, True)
 
-    def register_post_command(self, command: str, handler: typing.Callable[[Dict[bytes, bt_value], List[str]], bool]):
+    def register_post_command(self, command: str, handler: typing.Callable[[RoomAddPostRequest, List[str]], bool]):
         """
         Register a handler for slash commands that runs AFTER the message is inserted.
 

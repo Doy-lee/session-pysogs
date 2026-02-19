@@ -6,7 +6,7 @@ import sogs.plugin
 
 from typing     import Dict, List, Tuple
 from sogs.plugin import Plugin
-from sogs.types  import bt_value
+from sogs.types  import bt_value, RoomAddPostRequest
 
 @dataclasses.dataclass
 class SlashTestPlugin(Plugin):
@@ -27,22 +27,20 @@ class SlashTestPlugin(Plugin):
         sogs.plugin.log.info(log_line)
 
 
-    def handle_pre_slash(self, request: Dict[bytes, bt_value], command_parts: List[str]) -> bool:
-        sogs.plugin.log.debug(f"slash pre-insertion command: {request} {command_parts}")
+    def handle_pre_slash(self, request: RoomAddPostRequest, command_parts: List[str]) -> bool:  # pyright: ignore[reportUnusedParameter]
         if command_parts[0] == '/test_handled':
             return False
         return True
 
-    def handle_post_slash(self, request: Dict[bytes, bt_value], command_parts: List[str]) -> bool:
-        sogs.plugin.log.debug(f"slash post-insertion command: {request} {command_parts}")
+    def handle_post_slash(self, request: RoomAddPostRequest, command_parts: List[str]) -> bool:  # pyright: ignore[reportUnusedParameter]
         if command_parts[0] == '/test_handled':
             return False
         return True
 
-    def handle_get_file(self, request: Dict[bytes, bt_value], command_parts: List[str]) -> bool:
+    def handle_get_file(self, request: RoomAddPostRequest, command_parts: List[str]) -> bool:
         sogs.plugin.log.debug(f"/get_file pre-insertion command: {command_parts}")
 
-        room_token = typing.cast(bytes, request[b'room_token']).decode('utf-8')
+        room_token = request.room_token
         sogs.plugin.log.debug(f"room_token for file upload: {room_token}")
 
         file_meta = self.upload_file("test.jpg", room_token)

@@ -774,7 +774,7 @@ class Room:
                 if row['whisper_to'] is not None:
                     msg['whisper_to'] = row['whisper_to']
             msgs.append(msg)
-        app.logger.debug(f"{len(msgs)} going to user for room")
+        app.logger.debug(f"{len(msgs)} message going to user for room")
 
         # If the user only has "access", we want to lie about sequence numbers so that if
         # that user gains "read" later their client will request messages from before that

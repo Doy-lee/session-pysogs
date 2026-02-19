@@ -225,10 +225,8 @@ def plugin_on_room_add_post_request(m: oxenmq.Message) -> Optional[bytes]:
             return bt_serialize({b"error": error_msg})
 
         # Create the updated payload (w/ filtered now set, if it was filtered)
-        raw_payload: list[bytes] = m.data()
         if filter_result.response == sogs.plugin.FilterResponse.Silent:
-            req.filtered   = True
-            raw_payload[0] = req.to_bencode()
+            req.filtered = True
 
         # TODO: Make the command trigger character configurable. IMO this is not important, infact
         # it's probably better that it's a fixed character and is predictable across all SOGS and
@@ -242,7 +240,7 @@ def plugin_on_room_add_post_request(m: oxenmq.Message) -> Optional[bytes]:
 
         # Run pre-message hooks to check if the message is allowed to be posted in the room
         if len(command):
-            if not plugin_pre_message_commands(raw_payload, command):
+            if not plugin_pre_message_commands(req, command):
                 return bt_serialize({b"ok": True})
 
         # TODO: handle edit message
@@ -263,7 +261,7 @@ def plugin_on_room_add_post_request(m: oxenmq.Message) -> Optional[bytes]:
         responded = True
 
         # Run post-message hooks that can react to the _act_ of a message being posted into the room
-        plugin_post_message_commands(raw_payload, command)
+        plugin_post_message_commands(req, command)
         relay_on_message_posted(msg_id)
     except Exception as e:
         app.logger.warning(f"Exception handling new/edited message from sogs: {e}")
@@ -377,7 +375,7 @@ def plugin_filter_message(req: sogs.types.RoomAddPostRequest) -> FilterResult:
 
 @needs_app_context
 @log_exceptions
-def _plugin_message_commands(data: List[bytes], command: str, pre_command: bool) -> bool:
+def _plugin_message_commands(req: sogs.types.RoomAddPostRequest, command: str, pre_command: bool) -> bool:
     """
     pass command to plugins registered for that command, in order.
     Plugin returns True if we should continue handling the message, i.e. either that plugin ignored it
@@ -410,7 +408,7 @@ def _plugin_message_commands(data: List[bytes], command: str, pre_command: bool)
             resp = o.omq.request_future(
                 plugin_conns[plugin_id],
                 f"plugin.{command_type}",
-                *data,
+                req.to_bencode(),
                 request_timeout=timedelta(seconds=0.2),
             ).get()
         except TimeoutError as e:
@@ -430,11 +428,11 @@ def _plugin_message_commands(data: List[bytes], command: str, pre_command: bool)
     return True
 
 
-def plugin_pre_message_commands(data: List[bytes], command: str) -> bool:
-    return _plugin_message_commands(data, command, pre_command=True)
+def plugin_pre_message_commands(req: sogs.types.RoomAddPostRequest, command: str) -> bool:
+    return _plugin_message_commands(req, command, pre_command=True)
 
-def plugin_post_message_commands(data: List[bytes], command: str) -> bool:
-    return _plugin_message_commands(data, command, pre_command=False)
+def plugin_post_message_commands(req: sogs.types.RoomAddPostRequest, command: str) -> bool:
+    return _plugin_message_commands(req, command, pre_command=False)
 
 def setup_omq():
     app.logger.debug("Mule setting up omq")
