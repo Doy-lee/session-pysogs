@@ -23,6 +23,8 @@ from .types import (
     MessagePosted,
     PluginDeleteMessageRequest,
     PluginDeleteMessageResponse,
+    PluginReactionsRequest,
+    PluginReactionsResponse,
 )
 from typing          import Callable, Dict, List, Optional, Tuple, Union, Tuple
 from datetime        import timedelta
@@ -724,25 +726,26 @@ class Plugin:
         msg_id = typing.cast(MessageID, resp[b'msg_id'])
         return msg_id
 
-    def post_reactions(self, room_token: RoomToken, msg_id: MessageID, *reactions: str) -> Dict[bytes, bt_value]:
+    def post_reactions(self, room_token: RoomToken, msg_id: MessageID, *reactions: str) -> PluginReactionsResponse:
         conn: oxenmq.ConnectionID = self._require_conn_established()
-        req = {b"room_token": room_token, b"msg_id": msg_id, b"reactions": reactions}
+        req = PluginReactionsRequest(room_token=room_token, msg_id=msg_id, reactions=list(reactions))
         log.debug(f"Posting {len(reactions)} reaction(s) to message {msg_id} in room '{room_token}'")
-        return oxenc.bt_deserialize(self.omq.request_future( conn, "plugin.post_reactions", oxenc.bt_serialize(req), request_timeout=timedelta(seconds=5)).get()[0])
+        resp_list: List[bytes] = self.omq.request_future(conn, "plugin.post_reactions", req.to_bencode(), request_timeout=timedelta(seconds=5)).get()
+        assert len(resp_list) == 1
+        return PluginReactionsResponse.from_bencode(resp_list[0])
 
-    def remove_reactions(self, room_token: RoomToken, msg_id: MessageID, *reactions: str):
-        req = {b"room_token": room_token, b"msg_id": msg_id, b"reactions": reactions}
-        log.debug(f"Removing {len(reactions)} reaction(s) from message {msg_id} in room '{room_token}'")
-
+    def remove_reactions(self, room_token: RoomToken, msg_id: MessageID, *reactions: str) -> PluginReactionsResponse:
         conn: oxenmq.ConnectionID = self._require_conn_established()
-        return oxenc.bt_deserialize(
-            self.omq.request_future(
-                conn,
-                "plugin.remove_reactions",
-                oxenc.bt_serialize(req),
-                request_timeout=timedelta(seconds=5),
-            ).get()[0]
-        )
+        req = PluginReactionsRequest(room_token=room_token, msg_id=msg_id, reactions=list(reactions))
+        log.debug(f"Removing {len(reactions)} reaction(s) from message {msg_id} in room '{room_token}'")
+        resp_list: List[bytes] = self.omq.request_future(
+            conn,
+            "plugin.remove_reactions",
+            req.to_bencode(),
+            request_timeout=timedelta(seconds=5),
+        ).get()
+        assert len(resp_list) == 1
+        return PluginReactionsResponse.from_bencode(resp_list[0])
 
     def upload_file(self, file_path: str, room_token: RoomToken, display_filename: Optional[str] = None) -> Optional[FileUploadMetadata]:
         try:

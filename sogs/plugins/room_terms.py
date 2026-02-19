@@ -257,9 +257,9 @@ class RoomTermsPlugin(Plugin):
                                                         whisper_to=req.user_id,
                                                         relay_to_plugins=False)
         if msg_id:
-            react_resp: Dict[bytes, bt_value] = self.post_reactions(room_token, msg_id, typing.cast(str, room_config.accept_reaction))
-            if b'error' in react_resp:
-                sogs.plugin.log.error(f"Failed to add reaction to terms message for user {req.user_id} in room '{room_token}': {react_resp[b'error']}")
+            react_resp = self.post_reactions(room_token, msg_id, typing.cast(str, room_config.accept_reaction))
+            if react_resp.error:
+                sogs.plugin.log.error(f"Failed to add reaction to terms message for user {req.user_id} in room '{room_token}': {react_resp.error}")
                 return oxenc.bt_serialize("ERROR")
             if session_id not in self.pending_requests:
                 self.pending_requests[session_id] = dict()

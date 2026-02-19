@@ -1,21 +1,8 @@
+from typing import Any, Dict, List, Optional, Union
 import dataclasses
 import typing
 import oxenc
 
-from typing import Any, Dict, List, Union, Optional
-
-# Represents the Session account as bytes, i.e. 1b Blinding Prefix + 32b X25519 Public Key
-# This is not to be confused with the value of the Session ID that is typically returned from the
-# SOGS server OMQ response which is the hex representation of the Session account but held in a
-# bytes object,
-# e.g.
-#   OMQ Session ID response => b"15aaaa.."       (66 bytes)
-#   `SessionID`             => b"\x15\xaa\xaa.." (33 bytes)
-SessionID    = bytes
-RoomToken    = str
-RoomTokenStr = str
-TimestampS   = float
-MessageID    = int
 
 # Represents the different variants of data types that a primitive bencoded type can hold. These
 # values are produced and consumed by the module oxenc's bt_serialize/bt_deserialize functions.
@@ -26,11 +13,18 @@ bt_value = Union[
     str,
     List["bt_value"],
     List[int], # Covered by bt_value, but LSP still gets confused
+    List[str], # Covered by bt_value, but LSP still gets confused
     Dict[Union[bytes, str], "bt_value"],
 ]
+SessionID = bytes
+RoomToken = str
+MessageID = int
+TimestampS = float
 
 @dataclasses.dataclass
 class MessageInsert:
+    """When a message is posted to a room, a request describing the post to be added is created with
+    this structure and relayed to plugins for running the pre/post message hooks with this data"""
     unpadded_data:    bytes
     padded_data_size: int
     filtered:         bool
@@ -432,7 +426,9 @@ class PluginDeleteMessageRequest:
 
     @staticmethod
     def from_dict(src: Dict[bytes, bt_value]) -> "PluginDeleteMessageRequest":
-        result = PluginDeleteMessageRequest(msg_ids = typing.cast(List[int], src[b'msg_ids']))
+        result = PluginDeleteMessageRequest(
+            msg_ids = typing.cast(List[int], src[b'msg_ids'])
+        )
         return result
 
     @staticmethod
@@ -442,13 +438,16 @@ class PluginDeleteMessageRequest:
         return result
 
     def to_dict(self) -> Dict[bytes, bt_value]:
-        result: Dict[bytes, bt_value] = { b'msg_ids': self.msg_ids, }
+        result: Dict[bytes, bt_value] = {
+            b'msg_ids': self.msg_ids,
+        }
         return result
 
     def to_bencode(self) -> bytes:
         d      = self.to_dict()
         result = oxenc.bt_serialize(d)
         return result
+
 
 @dataclasses.dataclass
 class PluginDeleteMessageResponse:
@@ -484,3 +483,69 @@ class PluginDeleteMessageResponse:
         result = oxenc.bt_serialize(d)
         return result
 
+
+@dataclasses.dataclass
+class PluginReactionsRequest:
+    """Request from plugin to SOGS to post or remove reactions on a message."""
+    room_token: RoomToken
+    msg_id:     MessageID
+    reactions:  List[str]
+
+    @staticmethod
+    def from_dict(src: Dict[bytes, bt_value]) -> "PluginReactionsRequest":
+        result = PluginReactionsRequest(
+            room_token = typing.cast(bytes, src[b'room_token']).decode('utf-8'),
+            msg_id     = typing.cast(int, src[b'msg_id']),
+            reactions  = [r.decode('utf-8') for r in typing.cast(List[bytes], src[b'reactions'])],
+        )
+        return result
+
+    @staticmethod
+    def from_bencode(data: Union[bytes, memoryview]) -> "PluginReactionsRequest":
+        d: Dict[bytes, bt_value] = oxenc.bt_deserialize(data)
+        result                   = PluginReactionsRequest.from_dict(d)
+        return result
+
+    def to_dict(self) -> Dict[bytes, bt_value]:
+        result: Dict[bytes, bt_value] = {
+            b'room_token': self.room_token,
+            b'msg_id':     self.msg_id,
+            b'reactions':  self.reactions,
+        }
+        return result
+
+    def to_bencode(self) -> bytes:
+        d      = self.to_dict()
+        result = oxenc.bt_serialize(d)
+        return result
+
+
+@dataclasses.dataclass
+class PluginReactionsResponse:
+    """Response from SOGS to plugin after a post/remove reactions request."""
+    status: str
+    error:  Optional[str] = None
+
+    @staticmethod
+    def from_dict(src: Dict[bytes, bt_value]) -> "PluginReactionsResponse":
+        result = PluginReactionsResponse(status = typing.cast(bytes, src[b'status']).decode('utf-8'),)
+        if b'error' in src:
+            result.error = typing.cast(bytes, src[b'error']).decode('utf-8')
+        return result
+
+    @staticmethod
+    def from_bencode(data: Union[bytes, memoryview]) -> "PluginReactionsResponse":
+        d: Dict[bytes, bt_value] = oxenc.bt_deserialize(data)
+        result                   = PluginReactionsResponse.from_dict(d)
+        return result
+
+    def to_dict(self) -> Dict[bytes, bt_value]:
+        result: Dict[bytes, bt_value] = { b'status': self.status, }
+        if self.error is not None:
+            result[b'error'] = self.error.encode('utf-8')
+        return result
+
+    def to_bencode(self) -> bytes:
+        d      = self.to_dict()
+        result = oxenc.bt_serialize(d)
+        return result

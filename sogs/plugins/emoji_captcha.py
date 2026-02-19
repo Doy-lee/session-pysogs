@@ -702,8 +702,8 @@ class EmojiCaptchaPlugin(sogs.plugin.Plugin):
     def _ensure_refresh_emoji_on_captcha(self, room_token: sogs.types.RoomToken, user: UserCaptchaState, msg_id: sogs.types.MessageID):
         captchas_remaining: int  = self.retry_limit - user.captcha_attempts
         if not user.posted_captcha_refresh_emoji_applied and captchas_remaining > 1:
-            react_resp: Dict[bytes, sogs.types.bt_value] = self.post_reactions(room_token, msg_id, self.refresh_emoji)
-            if b'status' in react_resp and react_resp[b'status'] == b'OK':
+            react_resp = self.post_reactions(room_token, msg_id, self.refresh_emoji)
+            if react_resp.status == "OK":
                 user.posted_captcha_refresh_emoji_applied = True
 
     def tick(self, room_token: sogs.types.RoomToken, user_id: int, session_id: sogs.types.SessionID, room_name: str) -> sogs.types.bt_value:

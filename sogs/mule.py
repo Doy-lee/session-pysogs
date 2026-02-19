@@ -14,7 +14,7 @@ from oxenc import bt_deserialize, bt_serialize
 from datetime import timedelta
 from nacl.encoding import HexEncoder
 
-from sogs.types import bt_value, MessageID, PluginHelloRequest, PluginUploadFileRequest, PluginUploadFileResponse, PluginDeleteMessageRequest, PluginDeleteMessageResponse
+from sogs.types import bt_value, MessageID, PluginHelloRequest, PluginUploadFileRequest, PluginUploadFileResponse, PluginDeleteMessageRequest, PluginDeleteMessageResponse, PluginReactionsRequest, PluginReactionsResponse
 from .web import app
 from . import cleanup
 from . import config
@@ -764,66 +764,69 @@ def plugin_post_reactions(m: oxenmq.Message) -> bytes:
     """Post one or more reactions from this plugin to a single message."""
     metadata: Optional[PluginMetadata] = _require_plugin_conn_info(m.conn, need_user=True, msg_prefix="Failed to post reaction")
     if not metadata:
-        return bt_serialize({b'error': 'Plugin did not register itself with a hello handshake'})
+        response = PluginReactionsResponse(status="ERROR", error="Plugin did not register itself with a hello handshake")
+        return response.to_bencode()
     if not metadata.user:
-        return bt_serialize({b'error': f'Plugin {metadata.name} (id={metadata.id}) did not register with a Session ID'})
+        response = PluginReactionsResponse(status="ERROR", error=f"Plugin {metadata.name} (id={metadata.id}) did not register with a Session ID")
+        return response.to_bencode()
 
     try:
-        req = bt_deserialize(m.dataview()[0])
-        for key in (b'room_token', b'msg_id', b'reactions'):
-            if not key in req:
-                return bt_serialize({b'error': f"missing parameter {key}"})
-
-        room = Room(token=req[b'room_token'].decode('ascii'))
-        for reaction in req[b'reactions']:
+        req = PluginReactionsRequest.from_bencode(m.dataview()[0])
+        room = Room(token=req.room_token)
+        for reaction in req.reactions:
             app.logger.debug(f"plugin_post_reactions, posting reaction to room")
             room.add_reaction(
                 user             = metadata.user,
-                msg_id           = typing.cast(int, req[b'msg_id']),
-                reaction         = reaction.decode('utf-8'),
+                msg_id           = req.msg_id,
+                reaction         = reaction,
                 relay_to_plugins = False,
             )
     except NoSuchRoom as e:
         app.logger.warning(f"Error: {e}")
-        return bt_serialize({b'error': 'NoSuchRoom'})
+        response = PluginReactionsResponse(status="ERROR", error="NoSuchRoom")
+        return response.to_bencode()
     except Exception as e:
         app.logger.warning(f"Error: {e}")
-        return bt_serialize({b'error': 'Something getting wrong'})
+        response = PluginReactionsResponse(status="ERROR", error=str(e))
+        return response.to_bencode()
 
-    return bt_serialize({b'status': 'OK'})
+    response = PluginReactionsResponse(status="OK")
+    return response.to_bencode()
 
 
 @needs_app_context
 @log_exceptions
-def plugin_remove_reactions(m: oxenmq.Message):
+def plugin_remove_reactions(m: oxenmq.Message) -> bytes:
     """Remove all other reactions not from this plugin to a single message."""
-    metadata: Optional[PluginMetadata] = _require_plugin_conn_info(m.conn, need_user=True, msg_prefix="Failed to post reaction")
+    metadata: Optional[PluginMetadata] = _require_plugin_conn_info(m.conn, need_user=True, msg_prefix="Failed to remove reaction")
     if not metadata:
-        return bt_serialize({b'error': 'Plugin did not register itself with a hello handshake'})
+        response = PluginReactionsResponse(status="ERROR", error="Plugin did not register itself with a hello handshake")
+        return response.to_bencode()
     if not metadata.user:
-        return bt_serialize({b'error': f'Plugin {metadata.name} (id={metadata.id}) did not register with a Session ID'})
+        response = PluginReactionsResponse(status="ERROR", error=f"Plugin {metadata.name} (id={metadata.id}) did not register with a Session ID")
+        return response.to_bencode()
 
     try:
-        req = bt_deserialize(m.dataview()[0])
-        for key in (b'room_token', b'msg_id', b'reactions'):
-            if not key in req:
-                return bt_serialize({b'error': f"missing parameter {key}"})
-
-        room = Room(token=req[b'room_token'].decode('ascii'))
-        for reaction in req[b'reactions']:
+        req = PluginReactionsRequest.from_bencode(m.dataview()[0])
+        room = Room(token=req.room_token)
+        for reaction in req.reactions:
             app.logger.debug(f"plugin_remove_reactions, removing reactions from room")
             room.delete_other_reactions(
                 user     = metadata.user,
-                msg_id   = typing.cast(int, req[b'msg_id']),
-                reaction = reaction.decode('utf-8'),
+                msg_id   = req.msg_id,
+                reaction = reaction,
             )
     except NoSuchRoom as e:
         app.logger.warning(f"Error: {e}")
-        return bt_serialize({b'error': 'NoSuchRoom'})
+        response = PluginReactionsResponse(status="ERROR", error="NoSuchRoom")
+        return response.to_bencode()
     except Exception as e:
         app.logger.warning(f"Error: {e}")
-        return bt_serialize({b'error': 'Something getting wrong'})
-    return bt_serialize({b'status': 'OK'})
+        response = PluginReactionsResponse(status="ERROR", error=str(e))
+        return response.to_bencode()
+
+    response = PluginReactionsResponse(status="OK")
+    return response.to_bencode()
 
 
 # NOTE: this should be a list of IDs; if the plugin cares, it will have stored them.

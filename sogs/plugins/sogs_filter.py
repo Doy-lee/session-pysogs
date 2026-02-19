@@ -251,8 +251,8 @@ class SOGSFilterPlugin(Plugin):
                                   before broader categories (e.g., arabic) that contain them
     """
 
-    filter_mods:  bool                                      = False
-    rooms:        Dict[sogs.types.RoomTokenStr, RoomFilter] = dataclasses.field(default_factory=dict)
+    filter_mods:  bool                                   = False
+    rooms:        Dict[sogs.types.RoomToken, RoomFilter] = dataclasses.field(default_factory=dict)
 
     # NOTE: Character ranges for different alphabet filters loaded from the .ini file.
     # This is ordered because some are subsets of each other (e.g. persian is a subset of the
@@ -273,8 +273,7 @@ class SOGSFilterPlugin(Plugin):
         if 1:
             import sogs.config
             legacy_filter_mods: bool = sogs.config.FILTER_MODS
-            legacy_rooms: Dict[sogs.types.RoomTokenStr, RoomFilter] = {}
-
+            legacy_rooms:       Dict[sogs.types.RoomToken, RoomFilter] = {}
             legacy_filter = RoomFilter(profanity        = sogs.config.PROFANITY_FILTER,
                                        profanity_silent = sogs.config.PROFANITY_SILENT,
                                        alphabets        = sogs.config.ALPHABET_FILTERS,
@@ -417,10 +416,10 @@ class SOGSFilterPlugin(Plugin):
         log_line: str = "Plugin loaded:\n  " + "\n  ".join(sogs.utils.pretty_format_key_value_list(desc_lines))
         sogs.plugin.log.info(log_line)
 
-    def get_reply_settings(self, room_token: sogs.types.RoomTokenStr, filter_type: FilterType = FilterType.Profanity, filter_lang: Optional[str] = None) -> Optional[ReplySettings]:
+    def get_reply_settings(self, room_token: sogs.types.RoomToken, filter_type: FilterType = FilterType.Profanity, filter_lang: Optional[str] = None) -> Optional[ReplySettings]:
         # Precedences from least to most specific so that we load values from least specific first
         # then overwrite them if we find a value in a more specific section
-        room_precedence: List[sogs.types.RoomTokenStr] = ['*', room_token]
+        room_precedence: List[sogs.types.RoomToken] = ['*', room_token]
         result:          ReplySettings                 = ReplySettings()
         for r in room_precedence:
             room_filter: Optional[RoomFilter] = self.rooms.get(r)
@@ -451,7 +450,7 @@ class SOGSFilterPlugin(Plugin):
 
         return result
 
-    def generate_migration_ini(self, legacy_filter_mods: bool, legacy_rooms: Dict[sogs.types.RoomTokenStr, RoomFilter]) -> str:
+    def generate_migration_ini(self, legacy_filter_mods: bool, legacy_rooms: Dict[sogs.types.RoomToken, RoomFilter]) -> str:
         """Generate a .ini file string with the migrated settings from legacy config.
 
         This converts the legacy data structures (from FILTER_SETTINGS and ROOM_OVERRIDES)
