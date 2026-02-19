@@ -731,7 +731,7 @@ class Plugin:
             ).get()[0]
         )
 
-    def upload_file(self, file_path: str, room_token: bytes, display_filename: Optional[str] = None):
+    def upload_file(self, file_path: str, room_token: RoomToken, display_filename: Optional[str] = None):
         try:
             from os import path
             filename = display_filename if display_filename else path.basename(file_path)
