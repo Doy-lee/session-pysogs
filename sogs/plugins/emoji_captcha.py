@@ -857,7 +857,7 @@ class EmojiCaptchaPlugin(sogs.plugin.Plugin):
         user.posted_captcha           = self.captcha_manager.refresh(emoji_list=self.emoji_list)
         user.posted_captcha_timestamp = time.time()
 
-        captcha_attachment_metadata: Optional[Dict[str, typing.Any]] = self.upload_file(user.posted_captcha.file_path, room_token)
+        captcha_attachment_metadata: Optional[sogs.types.FileUploadMetadata] = self.upload_file(user.posted_captcha.file_path, room_token)
         if not captcha_attachment_metadata:
             sogs.plugin.log.error(f"Failed to create a CAPTCHA for user 0x{session_id.hex()}: CAPTCHA file upload failed")
             user.clear_posted_captcha()

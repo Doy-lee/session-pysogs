@@ -14,7 +14,7 @@ from oxenc import bt_deserialize, bt_serialize
 from datetime import timedelta
 from nacl.encoding import HexEncoder
 
-from sogs.types import bt_value, MessageID, PluginHelloRequest
+from sogs.types import bt_value, MessageID, PluginHelloRequest, PluginUploadFileRequest, PluginUploadFileResponse
 from .web import app
 from . import cleanup
 from . import config
@@ -403,14 +403,15 @@ def _plugin_message_commands(data: List[bytes], command: str, pre_command: bool)
             app.logger.warning(f"Plugin (id={plugin_id}) registered to handle {command_type} {command} but no longer in plugin_conns, somehow.")
             continue
 
-        resp: list[bytes] = []
+        metadata: PluginMetadata = plugin_conn_info[plugin_conns[plugin_id]]
+        resp:     list[bytes]    = []
         try:
-            app.logger.debug(f"Giving {command_type} {command} to plugin (id={plugin_id})")
+            app.logger.debug(f"Giving {command_type} {command} to {metadata.name} (id={plugin_id}, ed_key={metadata.ed_key.hex()})")
             resp = o.omq.request_future(
-                conn            = plugin_conns[plugin_id],
-                cmd             = f"plugin.{command_type}",
-                data            = data,
-                request_timeout = timedelta(seconds=0.2),
+                plugin_conns[plugin_id],
+                f"plugin.{command_type}",
+                *data,
+                request_timeout=timedelta(seconds=0.2),
             ).get()
         except TimeoutError as e:
             app.logger.warning(f"Timeout from plugin (id={plugin_id}) handling {command_type} {command}")
@@ -746,20 +747,17 @@ def plugin_upload_file(m: oxenmq.Message):
     if not metadata:
         return
 
-    req = bt_deserialize(m.dataview()[0])
+    req = PluginUploadFileRequest.from_bencode(m.dataview()[0])
     with db.transaction():
         try:
-            room = Room(token=req[b"room_token"].decode("ascii"))
+            room = Room(token=req.room_token)
         except Exception as e:
             app.logger.warning(f"Plugin attempted to upload file to inexistent room...")
             return bt_serialize({b'error': "NoSuchRoom"})
 
-        # just passing this as bytes(req[b'file_contents']) was complaining about the type...?
-        content = bytes(req[b'file_contents'])
-        file_id = room.upload_file(content, metadata.user, filename=req[b'filename'].decode('utf-8'), lifetime=3600.0)
-
-        url = f"{config.URL_BASE}/{room.token}/file/{file_id}"
-        return bt_serialize({b'file_id': file_id, b"url": url})
+        file_id = room.upload_file(req.file_contents, metadata.user, filename=req.filename, lifetime=3600.0)
+        url     = f"{config.URL_BASE}/{room.token}/file/{file_id}"
+        return PluginUploadFileResponse(file_id=file_id, url=url).to_bencode()
 
 @needs_app_context
 @log_exceptions

@@ -8,7 +8,20 @@ import enum
 import typing_extensions
 import configparser
 
-from .types import SessionID, MessageID, RoomToken, bt_value, PluginInsertMessage, PluginHelloRequest, RoomAddPostRequest, ReactionPosted, MessagePosted
+from .types import (
+    SessionID,
+    MessageID,
+    RoomToken,
+    bt_value,
+    PluginInsertMessage,
+    PluginHelloRequest,
+    PluginUploadFileRequest,
+    PluginUploadFileResponse,
+    FileUploadMetadata,
+    RoomAddPostRequest,
+    ReactionPosted,
+    MessagePosted
+)
 from typing          import Callable, Dict, List, Optional, Tuple, Union, Tuple
 from datetime        import timedelta
 from sogs.model.post import Post
@@ -635,7 +648,7 @@ class Plugin:
                      *,
                      whisper_to:           Optional[int] = None,
                      relay_to_plugins:     bool = False,
-                     attachments_metadata: Optional[List[Dict[str, typing.Any]]] = None) -> Optional[MessageID]:
+                     attachments_metadata: Optional[List[FileUploadMetadata]] = None) -> Optional[MessageID]:
         from sogs import session_pb2 as protobuf
         from time import time
         self.last_post_time = max(self.last_post_time + 1, int(time() * 1000))
@@ -648,14 +661,11 @@ class Plugin:
         attachment_ids: List[int] = []
         if attachments_metadata:
             for attachment_meta in attachments_metadata:
-                assert "id" in attachment_meta
-                assert isinstance(attachment_meta["id"], int)
-                attachment_ids.append(attachment_meta["id"])
+                attachment_ids.append(attachment_meta.id)
 
                 attachment = content.dataMessage.attachments.add()
-                for key in attachment_meta:
-                    _ = getattr(attachment, key)                   # Ensure the field is available in the attachment (throws if it isn't)
-                    setattr(attachment, key, attachment_meta[key]) # Assign the field
+                for key, value in attachment_meta.to_protobuf_dict().items():
+                    setattr(attachment, key, value)
 
         def pad_message(payload: bytes) -> bytearray:
             # NOTE: Direct port of
@@ -731,7 +741,7 @@ class Plugin:
             ).get()[0]
         )
 
-    def upload_file(self, file_path: str, room_token: RoomToken, display_filename: Optional[str] = None):
+    def upload_file(self, file_path: str, room_token: RoomToken, display_filename: Optional[str] = None) -> Optional[FileUploadMetadata]:
         try:
             from os import path
             filename = display_filename if display_filename else path.basename(file_path)
@@ -739,38 +749,36 @@ class Plugin:
             from pathlib import Path
             file_contents = Path(file_path).read_bytes()
 
-            req: Dict[bytes, bt_value] = {
-                b"filename":      filename,
-                b"file_contents": file_contents,
-                b"room_token":    room_token
-            }
+            req = PluginUploadFileRequest(
+                filename      = filename,
+                file_contents = file_contents,
+                room_token    = room_token,
+            )
 
             conn: oxenmq.ConnectionID = self._require_conn_established()
-            resp = oxenc.bt_deserialize(self.omq.request_future(conn, "plugin.upload_file", oxenc.bt_serialize(req), request_timeout=timedelta(seconds=3),).get()[0])
-
-            if not (b"file_id" in resp and b"url" in resp):
-                log.error(f"Incomplete upload response for '{filename}': missing file_id or url")
-                return None
-
-            metadata = {
-                "fileName": filename,
-                "id": resp[b"file_id"],
-                "url": resp[b"url"].decode("utf-8"),
-                "size": len(file_contents)
-            }
+            resp = PluginUploadFileResponse.from_bencode(
+                self.omq.request_future(conn, "plugin.upload_file", req.to_bencode(), request_timeout=timedelta(seconds=3)).get()[0]
+            )
 
             import mimetypes
             from PIL import Image
-            mime                    = mimetypes.guess_type(file_path)
-            metadata["contentType"] = mime[0]
-            if typing.cast(str, mime[0]).startswith("image"):
-                img                = Image.open(file_path)
-                width, height      = img.size
-                metadata["width"]  = width
-                metadata["height"] = height
+            mime         = mimetypes.guess_type(file_path)
+            content_type = mime[0]
+            width:  Optional[int] = None
+            height: Optional[int] = None
+            if content_type and content_type.startswith("image"):
+                img           = Image.open(file_path)
+                width, height = img.size
 
-            return metadata
-
+            result = FileUploadMetadata(
+                file_name    = filename,
+                id           = resp.file_id,
+                url          = resp.url,
+                size         = len(file_contents),
+                content_type = content_type,
+                width        = width,
+                height       = height,)
+            return result
         except Exception as e:
             log.error(f"Failed to upload file '{file_path}': {e}")
             return None

@@ -2,7 +2,7 @@ import dataclasses
 import typing
 import oxenc
 
-from typing import Dict, List, Union, Optional
+from typing import Any, Dict, List, Union, Optional
 
 # Represents the Session account as bytes, i.e. 1b Blinding Prefix + 32b X25519 Public Key
 # This is not to be confused with the value of the Session ID that is typically returned from the
@@ -338,4 +338,88 @@ class PluginHelloRequest:
 
     def to_bencode(self) -> bytes:
         result = oxenc.bt_serialize(self.to_dict())
+        return result
+
+@dataclasses.dataclass
+class PluginUploadFileRequest:
+    filename:      str
+    file_contents: bytes
+    room_token:    RoomToken
+
+    @staticmethod
+    def from_dict(src: Dict[bytes, bt_value]) -> "PluginUploadFileRequest":
+        result = PluginUploadFileRequest(
+            filename      = typing.cast(bytes, src[b'filename']).decode('utf-8'),
+            file_contents = typing.cast(bytes, src[b'file_contents']),
+            room_token    = typing.cast(bytes, src[b'room_token']).decode('utf-8'),)
+        return result;
+
+    @staticmethod
+    def from_bencode(data: Union[bytes, memoryview]) -> "PluginUploadFileRequest":
+        d: Dict[bytes, bt_value] = oxenc.bt_deserialize(data)
+        result                   = PluginUploadFileRequest.from_dict(d)
+        return result
+
+    def to_dict(self) -> Dict[bytes, bt_value]:
+        result: Dict[bytes, bt_value] = {
+            b'filename':      self.filename,
+            b'file_contents': self.file_contents,
+            b'room_token':    self.room_token,
+        }
+        return result
+
+    def to_bencode(self) -> bytes:
+        result = oxenc.bt_serialize(self.to_dict())
+        return result
+
+@dataclasses.dataclass
+class PluginUploadFileResponse:
+    """Response payload from SOGS after a file upload."""
+    file_id: int
+    url:     str
+
+    @staticmethod
+    def from_dict(src: Dict[bytes, bt_value]) -> "PluginUploadFileResponse":
+        result = PluginUploadFileResponse(file_id = typing.cast(int, src[b'file_id']),
+                                          url     = typing.cast(bytes, src[b'url']).decode('utf-8'),)
+        return result
+
+    @staticmethod
+    def from_bencode(data: Union[bytes, memoryview]) -> "PluginUploadFileResponse":
+        d: Dict[bytes, bt_value] = oxenc.bt_deserialize(data)
+        result                   = PluginUploadFileResponse.from_dict(d)
+        return result
+
+    def to_dict(self) -> Dict[bytes, bt_value]:
+        result: Dict[bytes, bt_value] = { b'file_id': self.file_id, b'url': self.url,}
+        return result
+
+    def to_bencode(self) -> bytes:
+        result = oxenc.bt_serialize(self.to_dict())
+        return result
+
+@dataclasses.dataclass
+class FileUploadMetadata:
+    file_name:    str
+    id:           int
+    url:          str
+    size:         int
+    content_type: Optional[str] = None
+    width:        Optional[int] = None  # Only for image attachments
+    height:       Optional[int] = None  # Only for image attachments
+
+    def to_protobuf_dict(self) -> Dict[str, Any]:
+        """Returns a dict with camelCase keys matching protobuf AttachmentPointer field names."""
+        result: Dict[str, Any] = {
+            "fileName": self.file_name,
+            "id":       self.id,
+            "url":      self.url,
+            "size":     self.size,
+        }
+        if self.content_type is not None:
+            result["contentType"] = self.content_type
+        if self.width is not None:
+            result["width"] = self.width
+        if self.height is not None:
+            result["height"] = self.height
         return result
