@@ -11,7 +11,7 @@ from sogs.types      import bt_value, RoomAddPostRequest, MessagePosted, Reactio
 from sogs.model.post import Post
 
 @dataclasses.dataclass
-class SlashTestPlugin(Plugin):
+class APIDebugPlugin(Plugin):
     request_read_posted_once_per_room: Set[RoomToken] = dataclasses.field(default_factory=set)
 
     def __post_init__(self):
@@ -163,7 +163,7 @@ class SlashTestPlugin(Plugin):
 
     def handle_help(self, request: RoomAddPostRequest, command_parts: List[str]) -> bool:
         """Show help message with available commands and debug capabilities."""
-        help_text = """🛠️ Slash Test Plugin - Help Guide
+        help_text = """🛠️ API Debug Plugin - Help Guide
 
 This plugin helps you explore and debug the SOGS plugin API by showing you exactly what data is received at each endpoint.
 
@@ -195,35 +195,35 @@ def entry_point():
     import argparse
 
     # Argument parser
-    parser = argparse.ArgumentParser(description='Slash Test Plugin for SOGS')
-    _ = parser.add_argument('--plugin_slash_test_ini_path', type=str,
-                            default=os.environ.get('PLUGIN_SLASH_TEST_INI_PATH', 'slash_test.ini'),
-                            help='Path to the configuration .ini file (default: slash_test.ini or set PLUGIN_SLASH_TEST_INI_PATH env)')
+    parser = argparse.ArgumentParser(description='API Debug Plugin for SOGS')
+    _ = parser.add_argument('--plugin_api_debug_ini_path', type=str,
+                            default=os.environ.get('PLUGIN_API_DEBUG_INI_PATH', 'api_debug.ini'),
+                            help='Path to the configuration .ini file (default: api_debug.ini or set PLUGIN_API_DEBUG_INI_PATH env)')
     args     = parser.parse_args()
-    ini_path = typing.cast(str, args.plugin_slash_test_ini_path)
+    ini_path = typing.cast(str, args.plugin_api_debug_ini_path)
 
     # Set logger name
-    sogs.plugin.log.name = '[SLASH TEST]'
+    sogs.plugin.log.name = '[API DEBUG]'
 
     # Load common INI configuration
-    config: sogs.plugin.PluginConfigFromINI = sogs.plugin.Plugin.load_ini_from_path(ini_path=ini_path, default_display_name='Slash Test Plugin')
+    config: sogs.plugin.PluginConfigFromINI = sogs.plugin.Plugin.load_ini_from_path(ini_path=ini_path, default_display_name='API Debug Plugin')
     if not config.success:
         return
 
     # Configure logging with level from .ini (must be after config load)
-    sogs.plugin.setup_plugin_logging(ini=config.ini, plugin_section='plugin_slash_test')
-    sogs.plugin.log.info(f"Loading Slash Test plugin config from {ini_path}")
+    sogs.plugin.setup_plugin_logging(ini=config.ini, plugin_section='plugin_api_debug')
+    sogs.plugin.log.info(f"Loading API Debug plugin config from {ini_path}")
 
     try:
         ini_parser = configparser.RawConfigParser(strict=False)
         _          = ini_parser.read(ini_path)
 
         # Plugin specific fields from INI
-        key_file:   str   = ini_parser.get('plugin_slash_test', 'key_file', fallback="slash_test_ed25519")
+        key_file:   str   = ini_parser.get('plugin_api_debug', 'key_file', fallback="api_debug_ed25519")
         ed_privkey: bytes = Plugin.get_or_make_ed25519_privkey(key_file)
 
         # Instantiate the plugin
-        plugin = SlashTestPlugin(sogs_address = config.sogs_address,
+        plugin = APIDebugPlugin(sogs_address = config.sogs_address,
                                  sogs_pubkey  = config.sogs_pubkey,
                                  ed_privkey   = ed_privkey,
                                  display_name = config.display_name)
