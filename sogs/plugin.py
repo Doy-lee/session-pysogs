@@ -8,7 +8,7 @@ import enum
 import typing_extensions
 import configparser
 
-from .types import SessionID, MessageID, RoomToken, bt_value, PluginInsertMessage, RoomAddPostRequest, ReactionPosted, MessagePosted
+from .types import SessionID, MessageID, RoomToken, bt_value, PluginInsertMessage, PluginHelloRequest, RoomAddPostRequest, ReactionPosted, MessagePosted
 from typing          import Callable, Dict, List, Optional, Tuple, Union, Tuple
 from datetime        import timedelta
 from sogs.model.post import Post
@@ -362,10 +362,11 @@ class Plugin:
             log.debug(f"Registering {len(post_commands)} post-command(s): {post_commands}")
             self.omq.send(conn, "plugin.register_post_commands", oxenc.bt_serialize({b'commands': list(post_commands)}))
 
-    def say_hello(self):
+    def _say_hello(self):
         conn: oxenmq.ConnectionID = self._require_conn_established()
         try:
-            future: oxenmq.ResultFuture = self.omq.request_future(conn, "plugin.hello", oxenc.bt_serialize(self.session_id.hex().encode()), request_timeout=timedelta(seconds=10))
+            hello                       = PluginHelloRequest(session_id=self.session_id)
+            future: oxenmq.ResultFuture = self.omq.request_future(conn, "plugin.hello", hello.to_bencode(), request_timeout=timedelta(seconds=10))
             resp:   bytes               = typing.cast(bytes, oxenc.bt_deserialize(future.get()[0]))
             if resp == b'OK':
                 return
@@ -403,17 +404,14 @@ class Plugin:
                                 f"!!\n"
                                 f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"))
 
-        self.say_hello()
-
         # FIXME: there's definitely a better way to do this, but if SOGS restarts and
         #        we reconnect, this makes SOGS recognize our omq connection as this plugin.
         count = 0
         while True:
+            if count == 0 or count % 60 == 0:
+                self._say_hello()
             count += 1
-            if count % 60 == 0:
-                self.say_hello()
             from time import sleep
-
             sleep(1)
 
     def register_on_request_read_handler(self, handler: Callable[[RoomReadRequest], bt_value]):

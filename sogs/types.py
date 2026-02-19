@@ -314,3 +314,28 @@ class MessagePosted:
 
     def to_bencode(self) -> bytes:
         return oxenc.bt_serialize(self.to_dict())
+
+@dataclasses.dataclass
+class PluginHelloRequest:
+    """Request payload sent by a plugin during the hello handshake. Contains the plugin's Session ID
+    which is used to entitle the plugin to room permissions"""
+    session_id: SessionID
+
+    @staticmethod
+    def from_dict(src: Dict[bytes, bt_value]) -> "PluginHelloRequest":
+        result = PluginHelloRequest(session_id = bytes.fromhex(typing.cast(bytes, src[b'session_id']).decode('utf-8')),)
+        return result
+
+    @staticmethod
+    def from_bencode(data: Union[bytes, memoryview]) -> "PluginHelloRequest":
+        d: Dict[bytes, bt_value] = oxenc.bt_deserialize(data)
+        result                   = PluginHelloRequest.from_dict(d)
+        return result
+
+    def to_dict(self) -> Dict[bytes, bt_value]:
+        result: Dict[bytes, bt_value] = {b'session_id': self.session_id.hex()}
+        return result
+
+    def to_bencode(self) -> bytes:
+        result = oxenc.bt_serialize(self.to_dict())
+        return result

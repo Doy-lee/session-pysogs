@@ -14,7 +14,7 @@ from oxenc import bt_deserialize, bt_serialize
 from datetime import timedelta
 from nacl.encoding import HexEncoder
 
-from sogs.types import bt_value, MessageID
+from sogs.types import bt_value, MessageID, PluginHelloRequest
 from .web import app
 from . import cleanup
 from . import config
@@ -498,16 +498,16 @@ def plugin_hello(m: oxenmq.Message):
             if len(metadata.name) == 0:
                 metadata.name = "(unnamed plugin)"
 
-        metadata: PluginMetadata = plugin_conn_info[m.conn]
+        metadata = plugin_conn_info[m.conn]
         try:
-            if len(m.dataview()):
-                session_id: str = bt_deserialize(m.dataview()[0]).decode('ascii')
-                u               = User(session_id=session_id, autovivify=True)
+            hello      = PluginHelloRequest.from_bencode(m.dataview()[0])
+            session_id = hello.session_id.hex()
+            u          = User(session_id=session_id, autovivify=True)
 
-                # TODO: handle plugin permissions and setup better
-                admin_user = User(id=0)
-                u.set_moderator(added_by=admin_user, visible=True)
-                metadata.user = u
+            # TODO: handle plugin permissions and setup better
+            admin_user = User(id=0)
+            u.set_moderator(added_by=admin_user, visible=True)
+            metadata.user = u
         except Exception as e:
             app.logger.warning(f"Plugin with id {row['id']} tried to register bad session_id.")
             del plugin_conns[metadata.id]
@@ -591,7 +591,6 @@ def plugin_register_post_command(m: oxenmq.Message):
 @log_exceptions
 def plugin_get_user_permissions(m: oxenmq.Message):
     pass
-
 
 @needs_app_context
 @log_exceptions
