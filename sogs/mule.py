@@ -14,7 +14,7 @@ from oxenc import bt_deserialize, bt_serialize
 from datetime import timedelta
 from nacl.encoding import HexEncoder
 
-from sogs.types import bt_value, MessageID, PluginHelloRequest, PluginUploadFileRequest, PluginUploadFileResponse
+from sogs.types import bt_value, MessageID, PluginHelloRequest, PluginUploadFileRequest, PluginUploadFileResponse, PluginDeleteMessageRequest, PluginDeleteMessageResponse
 from .web import app
 from . import cleanup
 from . import config
@@ -559,7 +559,7 @@ def plugin_register_command(m: oxenmq.Message, pre_command: bool):
 
     req:      Dict[bytes, oxenc.bt_value] = bt_deserialize(m.dataview()[0])
     commands: List[bytes]                 = typing.cast(List[bytes], req[b'commands'])
-    app.logger.debug(f"register_{command_type}, commands: {commands}")
+    app.logger.debug(f"Received {command_type} commands from {metadata.name} (ed_key={sogs.utils.fmt_bytes_trunc(metadata.ed_key)}) registering to SOGS: {commands}")
     for command in commands:
         command_utf8: str = ''
         try:
@@ -657,12 +657,8 @@ def plugin_delete_message(m: oxenmq.Message):
         return
 
     assert metadata.user
-    req = bt_deserialize(m.dataview()[0])
-    msg_ids = []
-    if b'msg_ids' in req:
-        msg_ids = req[b'msg_ids']
-    if b'msg_id' in req:
-        msg_ids.append(req[b'msg_id'])
+    request: PluginDeleteMessageRequest = PluginDeleteMessageRequest.from_bencode(m.dataview()[0])
+    msg_ids: List[int] = request.msg_ids
 
     success = False
     try:
@@ -675,14 +671,19 @@ def plugin_delete_message(m: oxenmq.Message):
             )
             if rowcount:
                 success = True
-                app.logger.info(f"Deleted message with ids {msg_ids}")
+                app.logger.info(f"Deleted message(s) with ids {msg_ids}")
     except Exception as e:
         app.logger.warning(f"Error: {e}")
+        response = PluginDeleteMessageResponse(status="ERROR", error=str(e))
+        return response.to_bencode()
 
     if not success:
         app.logger.warning(f"Failed to delete message with ids {msg_ids}")
-        return bt_serialize({b'error': 'Message deletion failed due to DB error'})
-    return bt_serialize({b'status': 'OK'})
+        response = PluginDeleteMessageResponse(status="ERROR", error="Message deletion failed - no messages deleted")
+        return response.to_bencode()
+
+    response = PluginDeleteMessageResponse(status="OK")
+    return response.to_bencode()
 
 @needs_app_context
 @log_exceptions

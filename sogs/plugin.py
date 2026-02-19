@@ -20,7 +20,9 @@ from .types import (
     FileUploadMetadata,
     RoomAddPostRequest,
     ReactionPosted,
-    MessagePosted
+    MessagePosted,
+    PluginDeleteMessageRequest,
+    PluginDeleteMessageResponse,
 )
 from typing          import Callable, Dict, List, Optional, Tuple, Union, Tuple
 from datetime        import timedelta
@@ -629,12 +631,13 @@ class Plugin:
         result = True
         if len(msg_ids):
             conn:      oxenmq.ConnectionID = self._require_conn_established();
-            future:    oxenmq.ResultFuture = self.omq.request_future(conn, "plugin.delete_message", oxenc.bt_serialize({b'msg_ids': msg_ids}))
+            request:   PluginDeleteMessageRequest = PluginDeleteMessageRequest(msg_ids=msg_ids)
+            future:    oxenmq.ResultFuture = self.omq.request_future(conn, "plugin.delete_message", request.to_bencode())
             resp_list: List[bytes]         = future.get()
             assert len(resp_list) == 1
 
-            resp = typing.cast(Dict[bytes, bt_value], oxenc.bt_deserialize(resp_list[0]))
-            if b'status' in resp and resp[b'status'] == b'OK':
+            response: PluginDeleteMessageResponse = PluginDeleteMessageResponse.from_bencode(resp_list[0])
+            if response.status == "OK":
                 result = True
         return result
 

@@ -18,6 +18,10 @@ def pretty_format_key_value_list(lines: List[Tuple[str, str]]) -> List[str]:
     result      = [f"{key + ':':<{max_key_len + 1}} {value}" for key, value in lines]
     return result
 
+def fmt_bytes_trunc(b: bytes) -> str:
+    result = f"{b[:2].hex()}..{b[-2:].hex()}"
+    return result
+
 def encode_base64(data: bytes):
     return base64.b64encode(data).decode()
 

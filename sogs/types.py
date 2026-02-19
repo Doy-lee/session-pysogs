@@ -423,3 +423,64 @@ class FileUploadMetadata:
         if self.height is not None:
             result["height"] = self.height
         return result
+
+
+@dataclasses.dataclass
+class PluginDeleteMessageRequest:
+    """Request from plugin to SOGS to delete message(s) created by the plugin."""
+    msg_ids: List[MessageID]
+
+    @staticmethod
+    def from_dict(src: Dict[bytes, bt_value]) -> "PluginDeleteMessageRequest":
+        result = PluginDeleteMessageRequest(msg_ids = typing.cast(List[int], src[b'msg_ids']))
+        return result
+
+    @staticmethod
+    def from_bencode(data: Union[bytes, memoryview]) -> "PluginDeleteMessageRequest":
+        d: Dict[bytes, bt_value] = oxenc.bt_deserialize(data)
+        result                   = PluginDeleteMessageRequest.from_dict(d)
+        return result
+
+    def to_dict(self) -> Dict[bytes, bt_value]:
+        result: Dict[bytes, bt_value] = { b'msg_ids': self.msg_ids, }
+        return result
+
+    def to_bencode(self) -> bytes:
+        d      = self.to_dict()
+        result = oxenc.bt_serialize(d)
+        return result
+
+@dataclasses.dataclass
+class PluginDeleteMessageResponse:
+    """Response from SOGS to plugin after a delete message request."""
+    status: str
+    error:  Optional[str] = None
+
+    @staticmethod
+    def from_dict(src: Dict[bytes, bt_value]) -> "PluginDeleteMessageResponse":
+        result = PluginDeleteMessageResponse(
+            status = typing.cast(bytes, src[b'status']).decode('utf-8'),
+        )
+        if b'error' in src:
+            result.error = typing.cast(bytes, src[b'error']).decode('utf-8')
+        return result
+
+    @staticmethod
+    def from_bencode(data: Union[bytes, memoryview]) -> "PluginDeleteMessageResponse":
+        d: Dict[bytes, bt_value] = oxenc.bt_deserialize(data)
+        result                   = PluginDeleteMessageResponse.from_dict(d)
+        return result
+
+    def to_dict(self) -> Dict[bytes, bt_value]:
+        result: Dict[bytes, bt_value] = {
+            b'status': self.status.encode('utf-8'),
+        }
+        if self.error is not None:
+            result[b'error'] = self.error.encode('utf-8')
+        return result
+
+    def to_bencode(self) -> bytes:
+        d      = self.to_dict()
+        result = oxenc.bt_serialize(d)
+        return result
+

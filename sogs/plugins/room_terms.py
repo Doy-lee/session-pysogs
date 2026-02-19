@@ -131,6 +131,7 @@ import time
 import typing
 import sogs.plugin
 import sogs.types
+import sogs.utils
 
 from typing      import Optional, Dict, List, Tuple
 from sogs.types  import bt_value, SessionID, RoomToken, MessageID
@@ -249,7 +250,7 @@ class RoomTermsPlugin(Plugin):
             return oxenc.bt_serialize("OK")
 
         room_config: RoomTermsConfig = self.get_config_for_room(room_token)
-        sogs.plugin.log.debug(f"Read request from user {req.user_id} (0x{session_id.hex()[:16]}...) for room '{room_token}'")
+        sogs.plugin.log.debug(f"Read request from user {req.user_id} ({sogs.utils.fmt_bytes_trunc(session_id)}) for room '{room_token}'")
 
         msg_id: Optional[MessageID] = self.post_message(room_token,
                                                         typing.cast(str, room_config.terms),
