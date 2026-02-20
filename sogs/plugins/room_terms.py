@@ -106,6 +106,23 @@ Config file (.ini):
 ; Seconds after accepting before user gets write permissions.
 ; write_timeout = 120
 
+; Message shown when user accepts terms (reacted with accept emoji).
+; reply_message = You now have read access. You will gain write access in \write seconds.
+
+; Message shown when user declines terms (reacted with wrong emoji).
+; failure_message = To enter, please react with \accept to accept the terms. You may try again in \retry seconds.
+
+; Escape sequences in reply_message and failure_message:
+;   \accept - the accept emoji (e.g. 👍)
+;   \write  - write timeout in seconds
+;   \retry  - retry timeout in seconds
+;   \r      - room name
+;   \t      - room token
+;   \@      - @mention of the user
+;   \p      - profile name
+;   \n      - newline
+;   \\     - literal backslash
+
 [plugin_room_terms.room.myroom]
 ; Room-specific settings for the room with token "myroom". Any settings here override
 ; the wildcard defaults above.
@@ -119,6 +136,10 @@ Config file (.ini):
 ; Custom timeouts for this room
 ; retry_timeout = 60
 ; write_timeout = 300
+
+; Custom reply messages for this room (see escape sequences above)
+; reply_message = Welcome to MyRoom! You now have read access.
+; failure_message = Sorry, you need to react with \accept to join MyRoom. Try again in \retry seconds.
 ```
 """
 
@@ -138,12 +159,37 @@ from sogs.types  import bt_value, SessionID, RoomToken, MessageID
 from sogs.plugin import Plugin, RoomReadRequest
 
 
+def process_terms_message(
+    text: str,
+    accept_reaction: str,
+    write_timeout: int,
+    retry_timeout: int,
+    room_name: str = "",
+    room_token: str = "",
+    user_mention: str = "",
+    profile_name: str = ""
+) -> str:
+    result = text.replace('\\\\', '\x00')
+    result = result.replace('\\accept', accept_reaction)
+    result = result.replace('\\write', str(write_timeout))
+    result = result.replace('\\retry', str(retry_timeout))
+    result = result.replace('\\r', room_name)
+    result = result.replace('\\t', room_token)
+    result = result.replace('\\@', user_mention)
+    result = result.replace('\\p', profile_name)
+    result = result.replace('\\n', '\n')
+    result = result.replace('\x00', '\\')
+    return result
+
+
 @dataclasses.dataclass
 class RoomTermsConfig:
     terms:           Optional[str] = None # The terms of agreement message shown to users.
     accept_reaction: Optional[str] = None # Emoji users must react with to accept the terms.
     retry_timeout:   Optional[int] = None # Seconds before user can retry after not accepting.
     write_timeout:   Optional[int] = None # Seconds after accepting before user gets write permissions.
+    reply_message:   Optional[str] = None # Message shown when user accepts terms.
+    failure_message: Optional[str] = None # Message shown when user declines terms.
 
 @dataclasses.dataclass
 class RoomTermsPlugin(Plugin):
@@ -168,10 +214,12 @@ class RoomTermsPlugin(Plugin):
     DEFAULT_RETRY_TIMEOUT:   typing.ClassVar[int] = 120
     DEFAULT_WRITE_TIMEOUT:   typing.ClassVar[int] = 120
     DEFAULT_TERMS:           typing.ClassVar[str] = "Please react with a thumbs up to join the room."
+    DEFAULT_REPLY_MESSAGE:   typing.ClassVar[str] = "You now have read access. You will gain write access in \\write seconds."
+    DEFAULT_FAILURE_MESSAGE: typing.ClassVar[str] = "To enter, please react with \\accept to accept the terms. You may try again in \\retry seconds."
 
     room_configs:     Dict[RoomToken, RoomTermsConfig]            = dataclasses.field(default_factory=dict)
-    pending_requests: Dict[SessionID, Dict[RoomToken, MessageID]] = dataclasses.field(default_factory=dict)
-    retry_jail:       Dict[SessionID, float]                      = dataclasses.field(default_factory=dict)
+    pending_requests: Dict[RoomToken, Dict[SessionID, MessageID]] = dataclasses.field(default_factory=dict)
+    retry_jail:       Dict[RoomToken, Dict[SessionID, float]]     = dataclasses.field(default_factory=dict)
 
     def __post_init__(self):
         super().__post_init__()
@@ -195,6 +243,8 @@ class RoomTermsPlugin(Plugin):
             ("Retry Timeout",   f"{wildcard_config.retry_timeout or self.DEFAULT_RETRY_TIMEOUT}s"),
             ("Write Timeout",   f"{wildcard_config.write_timeout or self.DEFAULT_WRITE_TIMEOUT}s"),
             ("Room Configs",    f"({len(self.room_configs)}) [{room_configs_desc}]" if len(self.room_configs) else "(using defaults)"),
+            ("Reply Message",   wildcard_config.reply_message or self.DEFAULT_REPLY_MESSAGE),
+            ("Failure Message", wildcard_config.failure_message or self.DEFAULT_FAILURE_MESSAGE),
         ])
 
         import sogs.utils
@@ -208,6 +258,8 @@ class RoomTermsPlugin(Plugin):
             accept_reaction = self.DEFAULT_ACCEPT_REACTION,
             retry_timeout   = self.DEFAULT_RETRY_TIMEOUT,
             write_timeout   = self.DEFAULT_WRITE_TIMEOUT,
+            reply_message   = self.DEFAULT_REPLY_MESSAGE,
+            failure_message = self.DEFAULT_FAILURE_MESSAGE,
         )
 
         # Override with wildcard config
@@ -221,6 +273,10 @@ class RoomTermsPlugin(Plugin):
                 result.retry_timeout = wildcard.retry_timeout
             if wildcard.write_timeout is not None:
                 result.write_timeout = wildcard.write_timeout
+            if wildcard.reply_message is not None:
+                result.reply_message = wildcard.reply_message
+            if wildcard.failure_message is not None:
+                result.failure_message = wildcard.failure_message
 
         # Override with specific room config
         if room_token != '*' and room_token in self.room_configs:
@@ -233,6 +289,10 @@ class RoomTermsPlugin(Plugin):
                 result.retry_timeout = specific.retry_timeout
             if specific.write_timeout is not None:
                 result.write_timeout = specific.write_timeout
+            if specific.reply_message is not None:
+                result.reply_message = specific.reply_message
+            if specific.failure_message is not None:
+                result.failure_message = specific.failure_message
 
         return result
 
@@ -240,30 +300,38 @@ class RoomTermsPlugin(Plugin):
         room_token: RoomToken = req.room_token
         session_id: SessionID = req.session_id
 
-        if session_id in self.retry_jail:
-            if time.time() > self.retry_jail[session_id]:
-                del self.retry_jail[session_id]
+        if room_token in self.retry_jail and session_id in self.retry_jail[room_token]:
+            if time.time() > self.retry_jail[room_token][session_id]:
+                del self.retry_jail[room_token][session_id]
             else:
                 return oxenc.bt_serialize("JAIL")
 
-        if session_id in self.pending_requests and room_token in self.pending_requests[session_id]:
+        if room_token in self.pending_requests and session_id in self.pending_requests[room_token]:
             return oxenc.bt_serialize("OK")
 
         room_config: RoomTermsConfig = self.get_config_for_room(room_token)
         sogs.plugin.log.debug(f"Read request from user {req.user_id} ({sogs.utils.fmt_bytes_trunc(session_id)}) for room '{room_token}'")
 
-        msg_id: Optional[MessageID] = self.post_message(room_token,
-                                                        typing.cast(str, room_config.terms),
-                                                        whisper_to=req.user_id,
-                                                        relay_to_plugins=False)
+        room_terms: str = process_terms_message(
+            typing.cast(str, room_config.terms),
+            typing.cast(str, room_config.accept_reaction),
+            typing.cast(int, room_config.write_timeout),
+            typing.cast(int, room_config.retry_timeout),
+            room_name=req.room_name,
+            room_token=room_token,
+            user_mention=f"@{req.session_id.hex()}",
+            profile_name=str(req.user_id)
+        )
+
+        msg_id: Optional[MessageID] = self.post_message(room_token, room_terms, whisper_to=req.user_id, relay_to_plugins=False)
         if msg_id:
             react_resp = self.post_reactions(room_token, msg_id, typing.cast(str, room_config.accept_reaction))
             if react_resp.error:
                 sogs.plugin.log.error(f"Failed to add reaction to terms message for user {req.user_id} in room '{room_token}': {react_resp.error}")
                 return oxenc.bt_serialize("ERROR")
-            if session_id not in self.pending_requests:
-                self.pending_requests[session_id] = dict()
-            self.pending_requests[session_id][room_token] = msg_id
+            if room_token not in self.pending_requests:
+                self.pending_requests[room_token] = dict()
+            self.pending_requests[room_token][session_id] = msg_id
 
         return oxenc.bt_serialize("OK")
 
@@ -272,9 +340,9 @@ class RoomTermsPlugin(Plugin):
         session_id: SessionID = req.session_id
         room_token: RoomToken = req.room_token
 
-        if not (session_id in self.pending_requests and
-                room_token in self.pending_requests[session_id] and
-                msg_id == self.pending_requests[session_id][room_token]):
+        if not (room_token in self.pending_requests and
+                session_id in self.pending_requests[room_token] and
+                msg_id == self.pending_requests[room_token][session_id]):
             return
 
         room_config:    RoomTermsConfig = self.get_config_for_room(room_token)
@@ -288,22 +356,44 @@ class RoomTermsPlugin(Plugin):
             sogs.plugin.log.info(f"Terms accepted by user {req.user_id} (0x{session_id.hex()[:16]}...) in room '{room_token}'; granting read now, write in {write_timeout}s")
             _ = self.set_user_room_permissions(room=room_token, user=session_id, sec_from_now=None, read=True)
             _ = self.set_user_room_permissions(room=room_token, user=session_id, sec_from_now=write_timeout, write=True)
+            reply_msg = process_terms_message(
+                typing.cast(str, room_config.reply_message),
+                accept_reaction,
+                write_timeout,
+                retry_timeout,
+                room_name=req.room_name,
+                room_token=room_token,
+                user_mention=f"@{req.session_id.hex()}",
+                profile_name=str(req.user_id)
+            )
             _ = self.post_message(room_token,
-                              f"You may read now. Study up, and you may learn to write in {write_timeout} seconds.",
+                              reply_msg,
                               whisper_to=req.user_id,
                               relay_to_plugins=False)
         else:
             sogs.plugin.log.info(f"Terms not accepted by user {req.user_id} (0x{session_id.hex()[:16]}...) in room '{room_token}'; reacted with '{req.reaction}' instead of '{accept_reaction}'; retry available in {retry_timeout}s")
+            failure_msg = process_terms_message(
+                typing.cast(str, room_config.failure_message),
+                accept_reaction,
+                write_timeout,
+                retry_timeout,
+                room_name=req.room_name,
+                room_token=room_token,
+                user_mention=f"@{req.session_id.hex()}",
+                profile_name=str(req.user_id)
+            )
             _ = self.post_message(room_token,
-                                  f"To enter, please react with {accept_reaction} to accept the terms. You may try again in {retry_timeout} seconds.",
+                                  failure_msg,
                                   whisper_to=req.user_id,
                                   relay_to_plugins=False)
-            self.retry_jail[session_id] = time.time() + retry_timeout
+            if room_token not in self.retry_jail:
+                self.retry_jail[room_token] = dict()
+            self.retry_jail[room_token][session_id] = time.time() + retry_timeout
 
         _ = self.delete_message(msg_id)
-        del self.pending_requests[session_id][room_token]
-        if len(self.pending_requests[session_id]) == 0:
-            del self.pending_requests[session_id]
+        del self.pending_requests[room_token][session_id]
+        if len(self.pending_requests[room_token]) == 0:
+            del self.pending_requests[room_token]
 
 
 def entry_point():
@@ -362,6 +452,10 @@ def entry_point():
                 room_config.retry_timeout = ini_parser.getint(section, 'retry_timeout')
             if ini_parser.has_option(section, 'write_timeout'):
                 room_config.write_timeout = ini_parser.getint(section, 'write_timeout')
+            if ini_parser.has_option(section, 'reply_message'):
+                room_config.reply_message = ini_parser.get(section, 'reply_message')
+            if ini_parser.has_option(section, 'failure_message'):
+                room_config.failure_message = ini_parser.get(section, 'failure_message')
 
             room_configs[room_token] = room_config
 
