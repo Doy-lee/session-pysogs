@@ -92,53 +92,8 @@
 ;history_prune_threshold = 30
 
 
-; Whether we should pass words through a profanity filter, rejecting messages that contain profane
-; words (and common permutations of those words).
-;
-;profanity_filter = no
-
-
-; Whether the profanity filter should be "silent" or not.  If enabled (the default), then messages
-; containing banned words are accepted by the server but quarantined and never distributed to other
-; users.  If disabled then users will receive an error when attempting to post a message containing
-; profanity.
-;
-;profanity_silent = yes
-
-
-; Path to a file containing a custom profanity list for the profanity filter.  If not specified then
-; the default list of the Python `better_profanity` library is used,
-; https://raw.githubusercontent.com/snguyenthanh/better_profanity/master/better_profanity/profanity_wordlist.txt
-; To add/remove words download that file, modify as needed, and set this value to the path to that
-; file.
-;
-;profanity_custom =
-
-; Whether we should reject messages that use a particular alphabet.  This is a space or
-; comma-separated list of alphabet names; posts with characters in the given language ranges will be
-; blocked (unless posted by a mod/admin).  Currently supported are: arabic, cyrillic, and persian
-; (note that persian is included within arabic).
-;
-; *This* setting is the default setting for all rooms, but you can also make room-specific filtering
-; (see sogs.ini.filter-sample for details).
-;
-;alphabet_filters =
-
-
-; Whether the alphabet filter should silently drop (true) or return an error (false).
-;
-;alphabet_silent = yes
-
-
-; Whether the above filters should be applied to moderators and admins (=yes) or not (=no).  The
-; default is no, that is, mods and admins messages are not filtered by default.
-;
-;filter_mods = no
-
-
-; The profanity and alphabet filters can be controlled on a per-room setting (which overrides the
-; global default set above) and can have automated responses sent by the SOGS server.  For details
-; and examples see the sogs.ini.filter-sample file.
+; Note: Message filtering (profanity, alphabet filtering) has been moved to the SOGS Filter plugin.
+; See plugins.md for installation instructions and sogs/plugins/sogs_filter.py for configuration.
 
 
 [web]

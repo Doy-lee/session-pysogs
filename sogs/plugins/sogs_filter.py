@@ -1,8 +1,8 @@
 r"""SOGS Filter Plugin
 
-  This plugin provides message filtering for profanity and non-Latin alphabets (Persian, Arabic,
-  Cyrillic). When enabled, it can automatically reject messages or reply to users with warnings
-  when filtered content is detected.
+  This plugin provides message filtering for profanity and arbitrary defined word patterns which are
+  dubbed "alphabets' in this plugin. When enabled, it can automatically reject messages or reply to
+  users with warnings when filtered content is detected.
 
   The plugin supports per-room configuration overrides and can be configured to filter moderator
   messages or exempt them. Filter responses can be customized with different reply messages for
@@ -89,7 +89,22 @@ Config file (.ini):
     [plugin_sogs_filter.room.myroom.reply.my_custom_alphabet] ; Reply message for `myroom` that triggered the `my_custom_alphabet` filter (overrides the previous sections)
     reply = Hey this message was disallowed
 
-  See the example as follows:
+   The filter name in reply sections can be one of the following reserved values:
+     *          - Universal/default replies (lowest precedence)
+     profanity  - Profanity-specific replies
+     alphabet   - General alphabet filter replies
+
+   Or any filter name defined in the [plugin_sogs_filter.alphabets] section.
+
+   The reply value supports the following escape sequences:
+     \@  - @mention of the poster whose message was declined
+     \p  - profile name in plain text
+     \r  - name of the room
+     \t  - token of the room
+     \n  - a line break
+     \\\  - a literal \\ character
+
+  See the template config.ini as follows:
 
 ```ini
 [log]
@@ -122,11 +137,17 @@ Config file (.ini):
 ; Enable profanity detection of messages posted into the room specified by <token>
 ; profanity        = false
 
-; If true, silently reject messages that trigger the profanity filter, if false, reply with warning
+; If true, accept the message into the room however the message is not visible to any other user
 ; profanity_silent = false
 
 ; Alphabets to filter (space-separated list of filter names defined in [plugin_sogs_filter.alphabets])
 ; alphabets        = persian arabic cyrillic
+
+; Alternatively, you can specify alphabets with subsequent alphabets on a new line prefixed with a
+; space such as:
+; alphabets        = persian
+;  arabic
+;  cyrillic
 
 ; If true, silently reject alphabet violations that trigger one of the alphabet filters, if false
 ; reply with warning
@@ -151,21 +172,75 @@ Config file (.ini):
 ; If true, reply publicly; if false, whisper to the user that triggered the filter
 ; public           = false
 ```
+Examples:
+  Complete example showing hierarchical configuration with per-room overrides:
 
-  The filter name in reply sections can be one of the following reserved values:
-    *          - Universal/default replies (lowest precedence)
-    profanity  - Profanity-specific replies
-    alphabet   - General alphabet filter replies
+  ```ini
+  [log]
+  level = INFO
 
-  Or any filter name defined in the [plugin_sogs_filter.alphabets] section.
+  [plugin]
+  sogs_pubkey_hex = xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  sogs_address = tcp://127.0.0.1:22028
 
-  The reply value supports the following escape sequences:
-    \\@  - @mention of the poster whose message was declined
-    \\p  - profile name in plain text
-    \\r  - name of the room
-    \\t  - token of the room
-    \\n  - a line break
-    \\\\  - a literal \\ character
+  [plugin_sogs_filter]
+  name = SOGS Filter
+  key_file = sogs_filter_ed25519
+
+  ; Define custom alphabet filters
+  [plugin_sogs_filter.alphabets]
+  persian  = [\u0621-\u0628\u062a-\u063a\u0641-\u0642\u0644-\u0648\u064e-\u0651\u0655\u067e\u0686\u0698\u06a9\u06af\u06be\u06cc]
+  arabic   = [\u0600-\u06ff\u0750-\u077f\u08a0-\u08ff\ufb50-\ufdff\ufe70-\ufefe]
+  cyrillic = [\u0400-\u04ff]
+
+  ; Global defaults for all rooms
+  [plugin_sogs_filter.room.*]
+  profanity = true
+  profanity_silent = false
+  alphabets = persian
+   arabic
+   cyrillic
+  alphabet_silent = true
+
+  ; Room-specific: sailors room allows profanity
+  [plugin_sogs_filter.room.sailors]
+  profanity = false
+
+  ; Reply messages - global defaults (lowest precedence)
+  [plugin_sogs_filter.room.*.reply.*]
+  reply = Please keep it clean in \r!
+   Warning: Inappropriate content detected!
+  profile_name = LanguagePolice
+  public = false
+
+  ; Profanity-specific replies (overrides global replies)
+  [plugin_sogs_filter.room.*.reply.profanity]
+  reply = Whoa there, \@! That language is too strong for the \r group!
+  profile_name = Swear Jar
+
+  ; Arabic-specific replies (overrides profanity replies)
+  [plugin_sogs_filter.room.*.reply.arabic]
+  reply = Only Latin characters are supported here.
+
+  ; Sudoku room-specific profanity replies (highest precedence)
+  [plugin_sogs_filter.room.sudoku.reply.profanity]
+  profile_name = Bot45
+  public = yes
+  reply = \@ got a little too enthusiastic today with their solve. Maybe someone can assist?
+   Uh oh, I think \@ has two ３s in the same row!
+   I think \@'s sudoku broke 😦
+  ```
+
+  Result: Messages containing arabic or cyrillic characters would be blocked everywhere
+  with the message "Only Latin characters are supported here." Profanity would be blocked
+  everywhere except the 'sailors' room. In sudoku room, profanity violations would trigger
+  one of three random Bot45 messages visible to everyone.
+
+  The plugin uses hierarchical precedence for configuration:
+    1. Most specific: [plugin_sogs_filter.room.<token>.reply.<filter>]
+    2. Filter-specific: [plugin_sogs_filter.room.*.reply.<filter>]
+    3. Category-specific: [plugin_sogs_filter.room.<token>.reply.*] or [plugin_sogs_filter.room.*.reply.<category>]
+    4. Least specific: [plugin_sogs_filter.room.*.reply.*] (global defaults)
 """
 
 import re
