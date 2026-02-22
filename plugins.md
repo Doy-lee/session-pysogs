@@ -1,7 +1,7 @@
-# SOGS Plugins
+# Plugins
 
-SOGS supports plugins that extend server functionality. Plugins run as separate Python processes and
-communicate with SOGS via OxenMQ, allowing them to filter messages, handle user verification,
+PySOGS supports plugins that extend server functionality. Plugins run as separate Python processes and
+communicate with PySOGS via OxenMQ, allowing them to filter messages, handle user verification,
 respond to events, and more.
 
 ## Installation
@@ -32,25 +32,25 @@ python3 -m sogs.plugins.<plugin_name> --plugin_<plugin_name>_ini_path <path/to/c
 ### Step 2: Configure the Plugin
 
 Create or update your `.ini` configuration file with the plugin settings. This can be in your main
-SOGS `.ini` file or a separate file.
+PySOGS `.ini` file or a separate file.
 
-At minimum, you need to configure the SOGS connection in the `[plugin]` section:
+At minimum, you need to configure the PySOGS connection in the `[plugin]` section:
 
 ```ini
 [plugin]
-; Your SOGS public key (found in room URLs)
+; Your PySOGS public key (found in room URLs)
 sogs_pubkey_hex = xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-; The OxenMQ address SOGS is listening on
+; The OxenMQ address PySOGS is listening on
 sogs_address = tcp://127.0.0.1:22028
 ```
 
 Each plugin has its own configuration section (e.g., `[plugin_emoji_captcha]`) with plugin-specific
 settings. See the plugin source files for detailed configuration options.
 
-### Step 3: Enable OxenMQ in SOGS
+### Step 3: Enable OxenMQ in PySOGS
 
-Ensure your SOGS configuration has OxenMQ enabled so plugins can connect:
+Ensure your PySOGS configuration has OxenMQ enabled so plugins can connect:
 
 ```ini
 [net]
@@ -71,7 +71,7 @@ and output the public key:
   Session Account (Blind-15): 15xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-### Step 5: Register the Plugin with SOGS
+### Step 5: Register the Plugin with PySOGS
 
 Use the Ed25519 public key from the previous step to register the plugin:
 
@@ -92,11 +92,11 @@ then register this name on the "hello" handshake.
 
 | Flag | Description |
 |------|-------------|
-| `--plugin-name` | Name of the plugin to register to the SOGS instance. Cosmetic only for operator book-keeping |
+| `--plugin-name` | Name of the plugin to register to the PySOGS instance. Cosmetic only for operator book-keeping |
 | `--plugin-global` | When `true`, the plugin is enabled for all rooms on the server. When `false`, the plugin must be explicitly enabled per-room. |
 | `--plugin-approver` | When `true`, the plugin will receive notifications for new messages which it can choose to filter, accept or deny the message. |
-| `--plugin-required` | When `true`, this plugin must be online, connected to the instance and approve incoming messages. If the plugin is not connected to the SOGS all messages are rejected until the plugin is connected. Ignored if `approver` is false. |
-| `--plugin-subscribe` | When `true`, the plugin receives notifications after messages and reactions are posted from SOGS. |
+| `--plugin-required` | When `true`, this plugin must be online, connected to the instance and approve incoming messages. If the plugin is not connected to the PySOGS all messages are rejected until the plugin is connected. Ignored if `approver` is false. |
+| `--plugin-subscribe` | When `true`, the plugin receives notifications after messages and reactions are posted from PySOGS. |
 
 #### Per-Room vs Global Registration
 
@@ -158,6 +158,6 @@ sogs --rooms='*' --remove-perms "rw"
 
 **File:** `sogs/plugins/api_debug.py`
 
-A development/debugging tool that echoes SOGS API payloads back to users via whispers. Useful for
+A development/debugging tool that echoes PySOGS API payloads back to users via whispers. Useful for
 understanding the plugin API and debugging plugin development. Provides slash commands for testing
 pre/post message handling.
