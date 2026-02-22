@@ -1,6 +1,8 @@
 # SOGS Plugins
 
-SOGS supports plugins that extend server functionality. Plugins run as separate Python processes and communicate with SOGS via OxenMQ, allowing them to filter messages, handle user verification, respond to events, and more.
+SOGS supports plugins that extend server functionality. Plugins run as separate Python processes and
+communicate with SOGS via OxenMQ, allowing them to filter messages, handle user verification,
+respond to events, and more.
 
 ## Installation
 
@@ -29,7 +31,8 @@ python3 -m sogs.plugins.<plugin_name> --plugin_<plugin_name>_ini_path <path/to/c
 
 ### Step 2: Configure the Plugin
 
-Create or update your `.ini` configuration file with the plugin settings. This can be in your main SOGS `.ini` file or a separate file.
+Create or update your `.ini` configuration file with the plugin settings. This can be in your main
+SOGS `.ini` file or a separate file.
 
 At minimum, you need to configure the SOGS connection in the `[plugin]` section:
 
@@ -42,7 +45,8 @@ sogs_pubkey_hex = xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 sogs_address = tcp://127.0.0.1:22028
 ```
 
-Each plugin has its own configuration section (e.g., `[plugin_emoji_captcha]`) with plugin-specific settings. See the plugin source files for detailed configuration options.
+Each plugin has its own configuration section (e.g., `[plugin_emoji_captcha]`) with plugin-specific
+settings. See the plugin source files for detailed configuration options.
 
 ### Step 3: Enable OxenMQ in SOGS
 
@@ -55,7 +59,8 @@ omq_listen = tcp://127.0.0.1:22028
 
 ### Step 4: Generate Plugin Keys
 
-Start the plugin once (standalone or via UWSGI). On first run, it will generate an Ed25519 keypair and output the public key:
+Start the plugin once (standalone or via UWSGI). On first run, it will generate an Ed25519 keypair
+and output the public key:
 
 ```
 [PLUGIN NAME] Plugin loaded:
@@ -72,7 +77,7 @@ Use the Ed25519 public key from the previous step to register the plugin:
 
 ```bash
 python3 -m sogs --add-plugin       <ed25519_pubkey_hex> \
-                --plugin-name      'Plugin Display Name' \
+                --plugin-name      'Plugin Name' \
                 --plugin-global    true \
                 --plugin-approver  true \
                 --plugin-required  true \
@@ -81,11 +86,16 @@ python3 -m sogs --add-plugin       <ed25519_pubkey_hex> \
 
 #### Plugin Registration Flags
 
+TODO: Plugins should internally have a name set by the plugin developer which it will shows up as
+in the slash menu authoritatively rather than allow users to set this arbitrarily. The plugin should
+then register this name on the "hello" handshake.
+
 | Flag | Description |
 |------|-------------|
+| `--plugin-name` | Name of the plugin to register to the SOGS instance. Cosmetic only for operator book-keeping |
 | `--plugin-global` | When `true`, the plugin is enabled for all rooms on the server. When `false`, the plugin must be explicitly enabled per-room. |
 | `--plugin-approver` | When `true`, the plugin will receive notifications for new messages which it can choose to filter, accept or deny the message. |
-| `--plugin-required` | When `true`, this plugin must be online, connected to the instance and approve incoming messages. Ignored if `approver` is false. |
+| `--plugin-required` | When `true`, this plugin must be online, connected to the instance and approve incoming messages. If the plugin is not connected to the SOGS all messages are rejected until the plugin is connected. Ignored if `approver` is false. |
 | `--plugin-subscribe` | When `true`, the plugin receives notifications after messages and reactions are posted from SOGS. |
 
 #### Per-Room vs Global Registration
@@ -109,44 +119,45 @@ The plugin is only active in explicitly enabled rooms.
 
 ## Available Plugins
 
+See the documentation in the plugin file for more detailed configuration options.
+
 ### Emoji CAPTCHA
 
 **File:** `sogs/plugins/emoji_captcha.py`
 
-Generates visual CAPTCHA challenges for users joining rooms. Users must react with the correct emoji shown in an image to gain read/write permissions. Supports configurable retry limits and timeouts.
+Generates visual CAPTCHA challenges for users joining rooms. Users must react with the correct emoji
+shown in an image to gain read/write permissions. Supports configurable retry limits and timeouts.
 
 Requires removing default read/write permissions from rooms:
 ```bash
 sogs --rooms='*' --remove-perms "rw"
 ```
-
-See the plugin file header for detailed configuration options.
 
 ### SOGS Filter
 
 **File:** `sogs/plugins/sogs_filter.py`
 
-Provides message filtering for profanity and non-Latin alphabets (Arabic, Persian, Cyrillic, etc.). Can automatically reject messages or reply with warnings. Supports per-room configuration overrides and customizable filter responses.
-
-See the plugin file header for detailed configuration options.
+Provides message filtering for profanity and arbitrarily defined alphabets by specifying regex
+patterns. Can automatically reject messages or reply with warnings. Supports per-room configuration
+overrides and customizable filter responses.
 
 ### Room Terms
 
 **File:** `sogs/plugins/room_terms.py`
 
-Presents users with terms of agreement when joining a room. Users must react with an accept emoji (default: thumbs up) to agree and gain access. Supports per-room terms messages and configurable retry timeouts.
+Presents users with terms of agreement when joining a room. Users must react with an accept emoji
+(default: thumbs up) to agree and gain access. Supports per-room terms messages and configurable
+retry timeouts.
 
 Requires removing default read/write permissions from rooms:
 ```bash
 sogs --rooms='*' --remove-perms "rw"
 ```
 
-See the plugin file header for detailed configuration options.
-
 ### API Debug
 
 **File:** `sogs/plugins/api_debug.py`
 
-A development/debugging tool that echoes SOGS API payloads back to users via whispers. Useful for understanding the plugin API and debugging plugin development. Provides slash commands for testing pre/post message handling.
-
-See the plugin file header for usage details.
+A development/debugging tool that echoes SOGS API payloads back to users via whispers. Useful for
+understanding the plugin API and debugging plugin development. Provides slash commands for testing
+pre/post message handling.
