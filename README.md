@@ -20,6 +20,11 @@ maintenance and requires some experience with running Python code and web applic
 
 [Manual Installation](install-uwsgi.md)
 
+## Plugins
+
+PySOGS supports extending functionality of communities using the plugin interface, see
+[Plugins](plugins.md) for more information.
+
 ## Administration
 
 For how to administer a running PySOGS see [SOGS Administration](administration.md).
