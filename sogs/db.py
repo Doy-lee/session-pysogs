@@ -20,12 +20,14 @@ HAVE_FILE_ID_HACKS = False
 # value we add to ids <= that max to calculate the new database message id.
 ROOM_IMPORT_HACKS = {}
 
+engine: Optional[sqlalchemy.engine.base.Engine] = None
+engine_initial_pid, metadata = None, None
 
-def get_conn():
+def get_conn() -> sqlalchemy.engine.Connection:
     """Gets a connection from the database engine connection pool.  This is not intended to be used
     by flask endpoints: they should use web.appdb instead (which calls this upon first use)."""
+    assert engine
     return engine.connect()
-
 
 def query(query, *, dbconn=None, bind_expanding=None, **params):
     """Executes a query containing :param style placeholders (regardless of the actual underlying
@@ -210,9 +212,6 @@ def create_admin_user(dbconn):
         dbconn=dbconn,
     )
 
-
-engine: Optional[sqlalchemy.engine.base.Engine] = None
-engine_initial_pid, metadata = None, None
 
 def _fix_plugin_keys(dbconn):
     """Verify and fix plugin x25519 keys derived from ed25519 keys."""

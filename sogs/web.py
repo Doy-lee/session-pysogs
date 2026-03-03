@@ -3,8 +3,9 @@ from werkzeug.local import LocalProxy
 from . import config
 import coloredlogs
 
-import sqlalchemy.engine.base
+import sqlalchemy.engine
 import typing
+from typing import Optional
 
 app = flask.Flask(__name__, template_folder=config.TEMPLATE_PATH, static_folder=config.STATIC_PATH)
 coloredlogs.install(milliseconds=True, isatty=True, logger=app.logger, level=config.LOG_LEVEL)
@@ -24,20 +25,17 @@ if not hasattr(flask.Flask, 'post'):
         _add_route_shortcut(flask.Blueprint, method)
 
 
-def get_db_conn() -> sqlalchemy.engine.base.Connectable:
+def get_db_conn() -> sqlalchemy.engine.Connection:
     if 'conn' not in flask.g:
         from . import db
-        flask.g.conn = typing.cast(sqlalchemy.engine.base.Connectable, db.get_conn())
-        assert isinstance(flask.g.conn, sqlalchemy.engine.base.Connectable)
+        flask.g.conn = db.get_conn()
     return flask.g.conn
 
 @app.teardown_appcontext
 def teardown_db_conn(exception):
-    conn = flask.g.pop('conn', None)
-
+    conn = typing.cast(Optional[sqlalchemy.engine.Connection], flask.g.pop('conn', None))
     if conn is not None:
         conn.close()
-
 
 # An application-context, lazily evaluated database connection.  (Note that in some contexts, such
 # as __main__.py, we may have replaced this with a non-lazy, actual current connection).
