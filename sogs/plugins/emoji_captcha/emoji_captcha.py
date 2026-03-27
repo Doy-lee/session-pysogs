@@ -837,5 +837,9 @@ def entry_point(ini_file: str = 'emoji_captcha.ini'):
     except Exception as e:
         sogs.plugin.log.error(f"Exception raised in plugin. Terminating:\n{e}")
 
+def install_hook(plugin: sogs.plugin.InstallPluginMetadata) -> sogs.plugin.InstallPluginResult:
+    result = sogs.plugin.InstallPluginResult(success=True, err_msg="")
+    return result
+
 if __name__ == "__main__":
     entry_point()

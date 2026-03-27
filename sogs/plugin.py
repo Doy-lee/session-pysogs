@@ -7,6 +7,7 @@ import logging
 import enum
 import typing_extensions
 import configparser
+import pathlib
 
 from .types import (
     SessionID,
@@ -63,6 +64,32 @@ def setup_plugin_logging(ini: Optional[configparser.ConfigParser] = None, plugin
         coloredlogs.install(milliseconds=True, isatty=True, logger=log, level=level)
     except ImportError:
         log.addHandler(console_log_handler)
+
+@dataclasses.dataclass
+class InstallPluginResult:
+    success: bool
+    err_msg: str
+
+@dataclasses.dataclass
+class InstallPluginMetadata:
+    """Metadata for an available plugin enumerated from disk."""
+    name:             str
+    description:      str
+    version:          str
+    author:           str
+    startup_file:     str
+    directory:        pathlib.Path
+    manifest_path:    pathlib.Path # Path to 'manifest.ini' for the plugin
+    sample_ini_path:  pathlib.Path # Path to '<install_id>.ini.sample' configuration file
+    desired_ini_path: pathlib.Path # Path to '<install_id>.ini' where the installation should write to
+
+    @property
+    def install_id(self) -> str:
+        """Returns the install ID derived from startup_file (e.g., 'api_debug' from 'api_debug.py')."""
+        if self.startup_file.endswith('.py'):
+            return self.startup_file[:-3]
+        return self.startup_file
+
 
 class FilterResponse(enum.Enum):
     Accept = "OK"     # Accept message, it will be posted and visible in the room

@@ -1,0 +1,14 @@
+[plugin]
+; Configuration for the plugin connection to the SOGS server
+sogs_pubkey_hex = xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+sogs_address = tcp://127.0.0.1:22028
+
+[plugin_api_debug]
+; Display name for the plugin
+display_name = API Debug Plugin
+
+; Path to the ed25519 private key file
+key_file = api_debug_ed25519
+
+; Log level for this plugin (overrides [log] section if set)
+log_level = INFO

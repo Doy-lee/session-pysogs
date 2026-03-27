@@ -66,7 +66,7 @@ def query(query, *, dbconn=None, bind_expanding=None, **params):
 
 # Begins a (potentially nested) transaction.  Takes an optional connection; if omitted uses
 # web.appdb.
-def transaction(dbconn: Optional[LocalProxy[sqlalchemy.engine.base.Connectable]] = None) -> sqlalchemy.engine.NestedTransaction:
+def transaction(dbconn: Optional[LocalProxy[sqlalchemy.engine.base.Connection]] = None) -> sqlalchemy.engine.NestedTransaction:
     if dbconn is None:
         from . import web
         dbconn = web.appdb

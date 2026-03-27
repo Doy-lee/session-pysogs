@@ -3,9 +3,14 @@ import atexit
 import re
 import sys
 import typing
-from typing import List, Tuple, Dict
+import pathlib
+import sogs.plugin
+import shutil
+from dataclasses import dataclass
+from typing import List, Tuple, Dict, Optional
 
 from . import __version__ as version
+
 
 ap = AP(
     epilog="""
@@ -217,9 +222,10 @@ vis_group.add_argument(
     "global mods, but not for room mods",
 )
 
-_ = ap.add_argument("--list-rooms", "-L", action='store_true', help="List current rooms and basic stats")
-_ = ap.add_argument('--list-global-mods', '-M', action='store_true', help="List global moderators/admins")
-_ = ap.add_argument("--list-plugins", "-P", action='store_true', help="List all registered plugins and their room configurations")
+_ = ap.add_argument("--list-rooms",       "-L",      action='store_true', help="List current rooms and basic stats")
+_ = ap.add_argument('--list-global-mods', '-M',      action='store_true', help="List global moderators/admins")
+_ = ap.add_argument("--list-plugins",     "-P",      action='store_true', help="List all registered plugins and their room configurations")
+_ = ap.add_argument('--install-plugins',  nargs='*',                      help="List available plugins or install specific plugin(s) by install ID. " "Usage: --install-plugins [install_id ...]")
 
 
 ap.add_argument(
@@ -277,6 +283,86 @@ def _resolve_plugin_id(plugin_id_or_key: str) -> int:
             f"No plugin found with Ed25519 public key '{plugin_id_or_key}'")
     return plugin['id']
 
+
+def scan_available_plugins() -> List[sogs.plugin.InstallPluginMetadata]:
+    """Scan the plugins directory for available plugins with manifest.ini and .ini.sample files."""
+    import os
+    import configparser
+    from pathlib import Path
+
+    plugins_dir                              = Path(__file__).parent / 'plugins'
+    result: List[sogs.plugin.InstallPluginMetadata] = []
+
+    if not plugins_dir.exists():
+        return result
+
+    for item in os.listdir(plugins_dir):
+        this_plugins_dir = plugins_dir / item
+        if this_plugins_dir.is_dir() and not item.startswith('_') and not item.startswith('.'):
+            manifest_path: pathlib.Path = this_plugins_dir / 'manifest.ini'
+            if not manifest_path.exists():
+                print(f"Warning: Skipping '{item}': manifest.ini not found", file=sys.stderr)
+                continue
+
+            try:
+                config = configparser.ConfigParser()
+                _      = config.read(manifest_path)
+
+                if 'info' not in config:
+                    print(f"Warning: Skipping '{item}': [info] section not found in manifest.ini", file=sys.stderr)
+                    continue
+
+                startup_file                  = config['info'].get('startup_file', '')
+                install_id:      str          = startup_file[:-3] if startup_file.endswith('.py') else item
+                sample_ini_path: pathlib.Path = this_plugins_dir / f"{install_id}.ini.sample"
+
+                if not sample_ini_path.exists():
+                    print(f"Warning: Skipping '{item}': {install_id}.ini.sample is required but not found", file=sys.stderr)
+                    continue
+
+                result.append(sogs.plugin.InstallPluginMetadata(
+                    name             = config['info'].get('name',        item),
+                    description      = config['info'].get('description', '(N/A)'),
+                    version          = config['info'].get('version',     '(N/A)'),
+                    author           = config['info'].get('author',      '(N/A)'),
+                    startup_file     = startup_file,
+                    directory        = this_plugins_dir,
+                    manifest_path    = manifest_path,
+                    sample_ini_path  = sample_ini_path,
+                    desired_ini_path = this_plugins_dir / f"{install_id}.ini",
+                ))
+            except Exception as e:
+                print(f"Warning: Failed to parse plugin manifest for {item}: {e}", file=sys.stderr)
+    return result
+
+def print_available_plugins_table(plugins: List[sogs.plugin.InstallPluginMetadata]):
+    """Print a formatted table of available plugins using tabulate."""
+    from tabulate import tabulate
+
+    if not plugins:
+        print("No available plugins found.")
+        return
+
+    table_data = []
+    for i, plugin in enumerate(plugins):
+        table_data.append([
+            i + 1,
+            plugin.install_id,
+            plugin.name,
+            plugin.version,
+            plugin.author,
+            plugin.description
+        ])
+
+    print("\n" + tabulate(
+        table_data,
+        headers      = ['#', 'Install ID', 'Name', 'Ver', 'Author', 'Description'],
+        tablefmt     = 'simple_grid',
+        maxcolwidths = [None, 18, 20, 6, 12, 50]
+    ))
+    print("\nTo install: python3 -m sogs --install-plugins <install_id> [ <install_id> ...]")
+
+
 args = ap.parse_args()
 
 update_room = not args.add_room and (
@@ -289,19 +375,20 @@ update_room = not args.add_room and (
     or args.clear_perms
 )
 incompat = [
-    ('--add-room', args.add_room),
-    ('--delete-room', args.delete_room),
-    ('room modifiers', update_room),
-    ('--list-rooms', args.list_rooms),
-    ('--list-global-mods', args.list_global_mods),
-    ('--list-plugins', args.list_plugins),
-    ('--initialize', args.initialize),
-    ('--upgrade', args.upgrade),
-    ('--check-upgrades', args.check_upgrades),
-    ('--add-plugin', args.add_plugin),
-    ('--add-room-plugin', args.add_room_plugin),
+    ('--add-room',           args.add_room),
+    ('--delete-room',        args.delete_room),
+    ('room modifiers',       update_room),
+    ('--list-rooms',         args.list_rooms),
+    ('--list-global-mods',   args.list_global_mods),
+    ('--list-plugins',       args.list_plugins),
+    ('--install-plugins',    args.install_plugins),
+    ('--initialize',         args.initialize),
+    ('--upgrade',            args.upgrade),
+    ('--check-upgrades',     args.check_upgrades),
+    ('--add-plugin',         args.add_plugin),
+    ('--add-room-plugin',    args.add_room_plugin),
     ('--delete-room-plugin', args.delete_room_plugin),
-    ('--delete-plugin', args.delete_plugin),
+    ('--delete-plugin',      args.delete_plugin),
 ]
 for i in range(1, len(incompat)):
     for j in range(0, i):
@@ -337,10 +424,15 @@ if args.rooms and not update_room and not args.delete_room_plugin and not args.a
     print("Error: --rooms specified without a room modification option", file=sys.stderr)
     sys.exit(1)
 
+# Handle --install-plugins that doesn't require database (just listing)
+if args.install_plugins is not None and (not args.install_plugins or (len(args.install_plugins) == 1 and args.install_plugins[0] == '')):
+    plugins = scan_available_plugins()
+    print_available_plugins_table(plugins)
+    sys.exit(0)
+
 from . import config, crypto, db
 from .migrations.exc import DatabaseUpgradeRequired
 from sqlalchemy_utils import database_exists
-
 db_updated = False
 try:
     if not args.initialize and not database_exists(config.DB_URL):
@@ -462,6 +554,103 @@ def perm_flag_to_word(char):
 
 perms = {}
 
+def install_plugin_to_db(plugin_name: str, ed_pubkey: bytes, x_pubkey: bytes, is_global: bool, is_approver: bool, is_required: bool, is_subscribe: bool):
+    assert len(ed_pubkey) == 32
+    assert len(x_pubkey) == 32
+
+    from .db import query
+    # Check if plugin already exists
+    existing = query("SELECT id, name, global, approver, required, subscribe FROM plugins WHERE ed_key = :key", key=ed_pubkey).first()
+
+    fields: List[Tuple[str, str]] = []
+    fields.append(("Ed25519 Pubkey", f"{ed_pubkey.hex()}"))
+    fields.append(("X25519 Pubkey",  f"{x_pubkey.hex()}"))
+    if existing is None:
+        # Create new plugin with provided or default values
+        plugin_id = db.insert_and_get_pk(
+            "INSERT INTO plugins (name, ed_key, x_key, global, approver, required, subscribe) "
+            "VALUES (:name, :ed_key, :x_key, :is_global, :is_approver, :is_required, :is_subscribe)",
+            'id',
+            name         = plugin_name,
+            ed_key       = ed_pubkey,
+            x_key        = x_pubkey,
+            is_global    = is_global,
+            is_approver  = is_approver,
+            is_required  = is_required,
+            is_subscribe = is_subscribe,)
+
+        # Build list of all fields
+        fields.append(("Name",      f"'{plugin_name}'"))
+        fields.append(("Global",    f"{is_global}"))
+        fields.append(("Approver",  f"{is_approver}"))
+        fields.append(("Required",  f"{is_required}"))
+        fields.append(("Subscribe", f"{is_subscribe}"))
+    else:
+        # Plugin exists - only update explicitly provided fields
+        plugin_id:     int  = existing['id']
+        old_name:      str  = existing['name'] or ""
+        old_global:    bool = bool(existing['global'])
+        old_approver:  bool = bool(existing['approver'])
+        old_required:  bool = bool(existing['required'])
+        old_subscribe: bool = bool(existing['subscribe'])
+
+        # Determine which fields to update
+        update_fields = []
+        update_params: Dict[str, typing.Any] = {'id': plugin_id}
+
+        # Name: update only if explicitly provided
+        if args.plugin_name is not None:
+            if old_name != plugin_name:
+                update_fields.append("name = :name")
+                update_params['name'] = plugin_name
+            fields.append(("Name", f"'{old_name}' -> '{plugin_name}'"))
+        else:
+            fields.append(("Name", f"'{old_name}' (unchanged)"))
+
+        # Always update keys (these are derived from the pubkey)
+        update_fields.extend(["ed_key = :ed_key", "x_key = :x_key"])
+        update_params['ed_key'] = ed_pubkey
+        update_params['x_key'] = x_pubkey
+
+        # Boolean flags: update only if explicitly provided
+        if args.plugin_global is not None:
+            if old_global != is_global:
+                update_fields.append("global = :is_global")
+                update_params['is_global'] = is_global
+            fields.append(("Global", f"{old_global} -> {is_global}"))
+        else:
+            fields.append(("Global", f"{old_global} (unchanged)"))
+
+        if args.plugin_approver is not None:
+            if old_approver != is_approver:
+                update_fields.append("approver = :is_approver")
+                update_params['is_approver'] = is_approver
+            fields.append(("Approver", f"{old_approver} -> {is_approver}"))
+        else:
+            fields.append(("Approver", f"{old_approver} (unchanged)"))
+
+        if args.plugin_required is not None:
+            if old_required != is_required:
+                update_fields.append("required = :is_required")
+                update_params['is_required'] = is_required
+            fields.append(("Required", f"{old_required} -> {is_required}"))
+        else:
+            fields.append(("Required", f"{old_required} (unchanged)"))
+
+        if args.plugin_subscribe is not None:
+            if old_subscribe != is_subscribe:
+                update_fields.append("subscribe = :is_subscribe")
+                update_params['is_subscribe'] = is_subscribe
+            fields.append(("Subscribe", f"{old_subscribe} -> {is_subscribe}"))
+        else:
+            fields.append(("Subscribe", f"{old_subscribe} (unchanged)"))
+
+        # Execute update only if there are changes
+        if update_fields:
+            query(f"UPDATE plugins SET {', '.join(update_fields)} WHERE id = :id", **update_params)
+
+    from sogs.utils import pretty_format_key_value_list
+    print(f"  Plugin '{plugin_name}' (id={plugin_id}):\n    " + "\n    ".join(pretty_format_key_value_list(fields)))
 
 def parse_and_set_perm_flags(flags, perm_setting):
     for char in flags:
@@ -819,98 +1008,7 @@ elif typing.cast(bool, args.add_plugin):
 
     from .db import query
     with db.transaction():
-        # Check if plugin already exists
-        existing = query("SELECT id, name, global, approver, required, subscribe FROM plugins WHERE ed_key = :key", key=ed_pubkey).first()
-
-        fields: List[Tuple[str, str]] = []
-        fields.append(("Ed25519 Pubkey", f"{ed_pubkey.hex()}"))
-        fields.append(("X25519 Pubkey",  f"{x_pubkey.hex()}"))
-        if existing is None:
-            # Create new plugin with provided or default values
-            plugin_id = db.insert_and_get_pk(
-                "INSERT INTO plugins (name, ed_key, x_key, global, approver, required, subscribe) "
-                "VALUES (:name, :ed_key, :x_key, :is_global, :is_approver, :is_required, :is_subscribe)",
-                'id',
-                name         = plugin_name,
-                ed_key       = ed_pubkey,
-                x_key        = x_pubkey,
-                is_global    = is_global,
-                is_approver  = is_approver,
-                is_required  = is_required,
-                is_subscribe = is_subscribe,)
-
-            # Build list of all fields
-            fields.append(("Name",      f"'{plugin_name}'"))
-            fields.append(("Global",    f"{is_global}"))
-            fields.append(("Approver",  f"{is_approver}"))
-            fields.append(("Required",  f"{is_required}"))
-            fields.append(("Subscribe", f"{is_subscribe}"))
-        else:
-            # Plugin exists - only update explicitly provided fields
-            plugin_id:     int  = existing['id']
-            old_name:      str  = existing['name'] or ""
-            old_global:    bool = bool(existing['global'])
-            old_approver:  bool = bool(existing['approver'])
-            old_required:  bool = bool(existing['required'])
-            old_subscribe: bool = bool(existing['subscribe'])
-
-            # Determine which fields to update
-            update_fields = []
-            update_params: Dict[str, typing.Any] = {'id': plugin_id}
-
-            # Name: update only if explicitly provided
-            if args.plugin_name is not None:
-                if old_name != plugin_name:
-                    update_fields.append("name = :name")
-                    update_params['name'] = plugin_name
-                fields.append(("Name", f"'{old_name}' -> '{plugin_name}'"))
-            else:
-                fields.append(("Name", f"'{old_name}' (unchanged)"))
-
-            # Always update keys (these are derived from the pubkey)
-            update_fields.extend(["ed_key = :ed_key", "x_key = :x_key"])
-            update_params['ed_key'] = ed_pubkey
-            update_params['x_key'] = x_pubkey
-
-            # Boolean flags: update only if explicitly provided
-            if args.plugin_global is not None:
-                if old_global != is_global:
-                    update_fields.append("global = :is_global")
-                    update_params['is_global'] = is_global
-                fields.append(("Global", f"{old_global} -> {is_global}"))
-            else:
-                fields.append(("Global", f"{old_global} (unchanged)"))
-
-            if args.plugin_approver is not None:
-                if old_approver != is_approver:
-                    update_fields.append("approver = :is_approver")
-                    update_params['is_approver'] = is_approver
-                fields.append(("Approver", f"{old_approver} -> {is_approver}"))
-            else:
-                fields.append(("Approver", f"{old_approver} (unchanged)"))
-
-            if args.plugin_required is not None:
-                if old_required != is_required:
-                    update_fields.append("required = :is_required")
-                    update_params['is_required'] = is_required
-                fields.append(("Required", f"{old_required} -> {is_required}"))
-            else:
-                fields.append(("Required", f"{old_required} (unchanged)"))
-
-            if args.plugin_subscribe is not None:
-                if old_subscribe != is_subscribe:
-                    update_fields.append("subscribe = :is_subscribe")
-                    update_params['is_subscribe'] = is_subscribe
-                fields.append(("Subscribe", f"{old_subscribe} -> {is_subscribe}"))
-            else:
-                fields.append(("Subscribe", f"{old_subscribe} (unchanged)"))
-
-            # Execute update only if there are changes
-            if update_fields:
-                query(f"UPDATE plugins SET {', '.join(update_fields)} WHERE id = :id", **update_params)
-
-        from sogs.utils import pretty_format_key_value_list
-        print(f"Plugin '{plugin_name}' (id={plugin_id}):\n  " + "\n  ".join(pretty_format_key_value_list(fields)))
+        install_plugin_to_db(ed_pubkey, x_pubkey, is_global, is_approver, is_required, is_subscribe)
 
 elif typing.cast(bool, args.add_room_plugin):
     # Resolve plugin identifier
@@ -1065,6 +1163,175 @@ elif typing.cast(bool, args.delete_plugin):
     else:
         print(f"Deleted plugin '{plugin_name}' (ID={plugin_id})")
 
+elif typing.cast(Optional[List[str]], args.install_plugins) is not None:
+    install_plugins                                  = typing.cast(List[str], args.install_plugins)
+    plugins: List[sogs.plugin.InstallPluginMetadata] = scan_available_plugins()
+
+    if len(plugins) == 0:
+        print("No plugins available to install")
+        sys.exit(0)
+
+    if len(install_plugins) == 1 and install_plugins[0] == '':
+        print_available_plugins_table(plugins)
+        sys.exit(0)
+
+    import importlib.util
+    import nacl.public
+    import nacl.signing
+    import nacl.bindings
+    import pathlib
+    import configparser
+    import tempfile
+    import os
+
+    import sogs.config
+    import sogs.crypto
+
+    for install_id in install_plugins:
+        if not install_id:
+            continue
+
+        # Find the plugin with the specified install ID
+        plugin: Optional[sogs.plugin.InstallPluginMetadata] = None
+        for plugins_it in plugins:
+            if plugins_it.install_id == install_id:
+                plugin = plugins_it
+                break
+
+        if plugin == None:
+            print(f"Unknown plugin specified '{install_id}', skipping", file=sys.stderr)
+            continue
+
+        # Load the ini file into memory
+        ini_parser = configparser.ConfigParser(strict=False)
+        try:
+            if plugin.desired_ini_path.exists():
+                _ = ini_parser.read(plugin.desired_ini_path)
+            else:
+                _ = ini_parser.read(plugin.sample_ini_path)
+        except Exception as e:
+            print("Failed to parse plugin sample .INI file ({plugin_sample_ini_path}): {e}", file=sys.stderr)
+            continue
+
+        # Setup [plugin] sogs pubkey/address
+        PLUGIN_SECTION = 'plugin'
+        if not ini_parser.has_section(PLUGIN_SECTION):
+            ini_parser.add_section(PLUGIN_SECTION)
+
+        _ = ini_parser.set(PLUGIN_SECTION, 'sogs_pubkey_hex', sogs.crypto.server_pubkey_hex)
+
+        listen_addr = ""
+        for it in sogs.config.OMQ_LISTEN:
+            if len(listen_addr):
+                listen_addr += "\n  "
+            listen_addr += it
+        _ = ini_parser.set(PLUGIN_SECTION, 'sogs_address', listen_addr)
+
+        # Setup [<install_id>] default fields
+        INSTALL_ID_SECTION = plugin.install_id
+        if not ini_parser.has_section(INSTALL_ID_SECTION):
+            ini_parser.add_section(INSTALL_ID_SECTION)
+
+        # Load or generate Ed25519 key specified by [<install_id>].key_file
+        print(f"Installing {plugin.name}...")
+        key_file: str          = ini_parser[INSTALL_ID_SECTION].get('key_file', f"{plugin.install_id}_ed25519")
+        key_path: pathlib.Path = plugin.directory / key_file
+        if pathlib.Path(key_path).exists():
+            print(f"  Loading Ed25519 key from {key_path.relative_to(os.getcwd())} ...", end=" ", flush=True)
+        else:
+            print(f"  Generating Ed25519 key to {key_path.relative_to(os.getcwd())} ...", end=" ", flush=True)
+        ed25519_key_bytes: bytes = sogs.plugin.Plugin.get_or_make_ed25519_privkey(str(key_path))
+        ed25519_key              = nacl.signing.SigningKey(ed25519_key_bytes[:nacl.bindings.crypto_sign_SEEDBYTES])
+        print(f"public: {bytes(ed25519_key.verify_key).hex()}", flush=True)
+
+        # Derive X25519 key to register into the SOGS instance plugin database
+        print("  Deriving X25519 key ...", end=" ", flush=True)
+        x25519_key:  nacl.public.PrivateKey = ed25519_key.to_curve25519_private_key()
+        x25519_pkey: nacl.public.PublicKey  = ed25519_key.verify_key.to_curve25519_public_key()
+        print(f"public: {bytes(x25519_pkey).hex()}", flush=True)
+
+        # Run the plugin's installation hook
+        startup_plugin_py_path = plugin.directory / plugin.startup_file
+        if not startup_plugin_py_path.exists():
+            print(f"\nError: Installation failed for {plugin.name}, plugin specified by `startup_file` does not exist: {startup_plugin_py_path}", file=sys.stderr)
+            continue
+
+        # Handle plugin installation result
+        try:
+            spec = importlib.util.spec_from_file_location(f"sogs.plugins.{install_id}", startup_plugin_py_path)
+            if not spec or not spec.loader:
+                print(f"\nError: Installation failed for {plugin.name}, `startup_file` plugin ({startup_plugin_py_path}) did not load successfully: is it a valid python file?", file=sys.stderr)
+                continue
+
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            if not hasattr(module, 'install_hook'):
+                print(f"\nError: Installation failed for {plugin.name}, `startup_file` plugin ({startup_plugin_py_path}) did not implement `install_hook(plugin: sogs.plugin.InstallPluginMetadata)`", file=sys.stderr)
+                continue
+
+            print("  Running plugin installer ...")
+            install_result = module.install_hook(plugin)  # pyright: ignore[reportAny]
+            if not isinstance(install_result, sogs.plugin.InstallPluginResult):
+                print(f"\nError: Installation failed for {plugin.name}, `startup_file` plugin ({startup_plugin_py_path}) install hook did not return a sogs.plugin.InstallPluginResult value: returned ({typeof(install_result)})", file=sys.stderr)
+                continue
+
+            if not install_result.success:
+                print(f"\nError: Installation failed for {plugin.name}, `startup_file` plugin ({startup_plugin_py_path}) install failed: {install_result.err_msg}", file=sys.stderr)
+                continue
+
+        except Exception as e:
+            print(f"\nError: Installation failed for {plugin.name}, loading of `startup_file` plugin ({startup_plugin_py_path}) failed: {e}", file=sys.stderr)
+            continue
+
+        # All installation steps run successfully, we'll now commit the config files update the DB
+        # in a semi-atomic manner (everything thus far has been mutating runtime memory only).
+        ini_bak_path = plugin.desired_ini_path.with_suffix('.bak')
+        key_bak_path = key_path.with_suffix('.bak')
+        try:
+            with tempfile.NamedTemporaryFile() as tmp_ini_file:
+                with tempfile.NamedTemporaryFile() as tmp_ed25519_key:
+                    from .db import query
+                    with db.transaction():
+                        # Register the plugin to the DB
+                        print("  Registering plugin in SOGS instance ...", flush=True)
+                        is_global    = False
+                        is_approver  = False
+                        is_required  = False
+                        is_subscribe = False
+                        install_plugin_to_db(plugin.name, bytes(ed25519_key.verify_key), bytes(x25519_pkey), is_global, is_approver, is_required, is_subscribe)
+
+                        # Write the files we care about inside the DB transaction, an exception will
+                        # rollback any changes and undo the plugin installation essentially.
+                        import io
+                        ini_buffer = io.StringIO()
+                        _          = ini_parser.write(ini_buffer)
+
+                        # Save .ini file and ed25519 keypair to temporary location
+                        _ = tmp_ed25519_key.write(ed25519_key_bytes)
+                        _ = tmp_ini_file.write(ini_buffer.getvalue().encode())
+
+                        # Move the old files, if they exist, this doubles as a permission check that we
+                        # can indeed replace the file. If these fail, an exception is raised
+                        if key_path.exists():
+                            _ = shutil.move(src=key_path, dst=key_bak_path)
+
+                        if plugin.desired_ini_path.exists():
+                            _ = shutil.move(src=plugin.desired_ini_path, dst=ini_bak_path)
+
+                        # Now move the files into place
+                        _ = shutil.move(src=tmp_ini_file.name, dst=plugin.desired_ini_path)
+                        _ = shutil.move(src=tmp_ed25519_key.name, dst=key_path)
+        except Exception as e:
+            print(f"  Error: Installation failed for {plugin.name}, writing installation to disk did not succeed: {e}", file=sys.stderr)
+            try:
+                if ini_bak_path.exists():
+                    _ = shutil.move(ini_bak_path, plugin.desired_ini_path)
+                if key_bak_path.exists():
+                    _ = shutil.move(key_bak_path, key_path)
+                print("  Installation reverted", file=sys.stderr)
+            except Exception as rollback_e:
+                print(f"CRITICAL: Failed to roll back file system changes: {rollback_e}", file=sys.stderr)
+                print("Please restore the .bak files ({ini_bak_path} and {key_bak_path}) manually by removing the .bak suffix from them", file=sys.stderr)
 else:
     print("Error: no action given", file=sys.stderr)
     ap.print_usage()
