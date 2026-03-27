@@ -11,17 +11,18 @@ trap 'echo -e "\a"' EXIT
       build-essential cmake ninja-build pkg-config autoconf git python3 python3-pip python3-venv python3-dev automake libtool
 
 # Create pre-requisite folder layouts
+  script_dir=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
   base_dir=$PWD
   builds_dir=$base_dir/Builds
   code_dir=$base_dir/Code
   mkdir --parents $builds_dir
   mkdir --parents $code_dir
 
-# Setup virtual env
+# Setup virtual env (absolute path to python to make sure it's the same one that uwsgi uses by default to minimise potential for error)
   venv_dir=$builds_dir/session-pysogs/VEnv
-  python3 -m venv $venv_dir
+  /usr/bin/python3 -m venv $venv_dir
   source $venv_dir/bin/activate
-  python3 -m pip install pybind11 wheel pynacl typing_extensions coloredlogs uwsgidecorators flask cryptography pynacl pillow protobuf qrcode better-profanity sqlalchemy sqlalchemy-utils tabulate
+  python3 -m pip install -r $script_dir/requirements.txt
 
 # NOTE: oxen-encoding
   if [[ ! -d $code_dir/oxen-encoding ]]; then

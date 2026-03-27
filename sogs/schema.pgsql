@@ -599,6 +599,7 @@ CREATE TABLE plugins (
     x_key BYTEA,                                            /* Plugin's x25519 pubkey derived from ed_key for OxenMQ auth */
     user BIGINT REFERENCES users ON DELETE CASCADE,         /* Plugin can be tied to a session_id/user */
     name TEXT,                                              /* Human readable name for SOGS operator book-keeping purposes */
+    install_id TEXT UNIQUE NOT NULL,                       /* Unique identifier used to install/refer to this plugin */
     global BOOLEAN DEFAULT FALSE,                           /* Is this plugin to be applied **all** messages */
     approver BOOLEAN DEFAULT FALSE,                         /* Can this plugin deny/disapprove messages? */
     required BOOLEAN DEFAULT FALSE,                         /* is this plugin's approval **required** for messages? */

@@ -1,0 +1,1 @@
+from .room_terms import entry_point, install_hook

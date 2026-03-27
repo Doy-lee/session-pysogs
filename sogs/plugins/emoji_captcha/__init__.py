@@ -1,0 +1,1 @@
+from .emoji_captcha import entry_point, install_hook

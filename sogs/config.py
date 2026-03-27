@@ -44,6 +44,7 @@ UPLOAD_PATH = 'uploads'
 ROOM_OVERRIDES = {}
 FILTER_SETTINGS = {}
 USE_OLD_SOGS_FILTERING = True
+DATA_DIR = 'sogs-data'
 
 # Will be true if we're running as a uwsgi app, false otherwise; used where we need to do things
 # only in one case or another (e.g. database initialization only via app mode).
@@ -126,7 +127,8 @@ def load_config():
     # value lambda extracts the value (if None/omitted use str value as-is)
     setting_map = {
         'db': {
-            'url': ('DB_URL', lambda x: x.startswith('sqlite:///') or x.startswith('postgresql'))
+            'url': ('DB_URL', lambda x: x.startswith('sqlite:///') or x.startswith('postgresql')),
+            'data_dir': ('DATA_DIR',),
         },
         'crypto': {'key_file': ('KEY_FILE',)},
         'net': {

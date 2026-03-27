@@ -62,6 +62,8 @@ CREATE TABLE plugins (
     ed_key BLOB NOT NULL UNIQUE,                           /* Plugin's ed25519 pubkey */
     x_key BLOB NOT NULL,                                   /* Plugin's x25519 pubkey derived from ed_key for OxenMQ auth */
     "user" INTEGER REFERENCES users(id) ON DELETE CASCADE, /* the bot can be tied to a session_id/user */
+    name TEXT,                                             /* Human readable name for SOGs operator book-keeping */
+    install_id TEXT UNIQUE NOT NULL,                       /* Unique identifier used to install/refer to this plugin */
     global BOOLEAN DEFAULT FALSE,
     approver BOOLEAN DEFAULT FALSE,                        /* can this bot deny/disapprove messages? */
     required BOOLEAN DEFAULT FALSE,                        /* is this bot's approval **required** for messages? */
@@ -75,6 +77,8 @@ CREATE TABLE plugins (
     ed_key BYTEA UNIQUE,                            /* Plugin's ed25519 pubkey */
     x_key BYTEA,                                    /* Plugin's x25519 pubkey derived from ed_key for OxenMQ auth */
     user BIGINT REFERENCES users ON DELETE CASCADE, /* the bot can be tied to a session_id/user */
+    name TEXT,                                      /* Human readable name for SOGs operator book-keeping */
+    install_id TEXT UNIQUE NOT NULL,               /* Unique identifier used to install/refer to this plugin */
     global BOOLEAN DEFAULT FALSE,
     approver BOOLEAN DEFAULT FALSE,                 /* can this bot deny/disapprove messages? */
     required BOOLEAN DEFAULT FALSE,                 /* is this bot's approval **required** for messages? */

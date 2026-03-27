@@ -10,6 +10,8 @@
 ; PostgreSQL is also supported; see the SQLAlchemy docs for the required connect string format.
 ;url = sqlite:///sogs.db
 
+; The folder where sogs data is kept, currently only plugins utilise this directory
+;data_dir = sogs-data
 
 [crypto]
 

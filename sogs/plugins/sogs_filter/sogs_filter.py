@@ -6,7 +6,6 @@ import dataclasses
 import enum
 import copy
 import sogs.plugin
-import os
 import configparser
 
 from typing import Optional, Dict, List, Tuple, Set, Union
@@ -469,14 +468,22 @@ def process_reply_escapes(text: str) -> str:
 
 def entry_point():
     import argparse
+    import pathlib
+
+    # Get default path from environment variables
+    default_ini_path = sogs.plugin.resolve_plugin_ini_path('sogs_filter', 'PLUGIN_SOGS_FILTER_INI_PATH')
 
     # Argument parser
     parser = argparse.ArgumentParser(description='SOGS Filter Plugin')
     _ = parser.add_argument('--plugin_sogs_filter_ini_path', type=str,
-                            default=os.environ.get('PLUGIN_SOGS_FILTER_INI_PATH', 'sogs_filter.ini'),
-                            help='Path to the configuration .ini file (default: sogs_filter.ini or set PLUGIN_SOGS_FILTER_INI_PATH env)')
-    args     = parser.parse_args()
+                            default=str(default_ini_path),
+                            help='Path to the plugin configuration .ini file. Overrides environment variables if specified.')
+    args = parser.parse_args()
     ini_file = typing.cast(str, args.plugin_sogs_filter_ini_path)
+
+    # Verify path exists (whether from CLI or default)
+    if not pathlib.Path(ini_file).exists():
+        sogs.plugin._print_plugin_config_error('sogs_filter', pathlib.Path(ini_file), 'PLUGIN_SOGS_FILTER_INI_PATH')
 
     # Set logger name
     sogs.plugin.log.name = '[SOGS FILTER]'
@@ -495,9 +502,15 @@ def entry_point():
         _          = ini_parser.read(ini_file)
 
         # Get filter-specific config from [plugin_sogs_filter] section
-        key_file    = ini_parser.get('plugin_sogs_filter',        'key_file',    fallback="plugin_sogs_filter_ed25519")
+        key_file    = ini_parser.get('plugin_sogs_filter',        'key_file',    fallback="sogs_filter_ed25519")
         filter_mods = ini_parser.getboolean('plugin_sogs_filter', 'filter_mods', fallback=False)
-        ed_privkey  = sogs.plugin.Plugin.get_or_make_ed25519_privkey(key_file)
+
+        # Resolve key path relative to .ini file directory
+        key_file_path = pathlib.Path(key_file)
+        if not key_file_path.is_absolute():
+            ini_file_path = pathlib.Path(ini_file)
+            key_file_path = ini_file_path.parent / key_file_path
+        ed_privkey = sogs.plugin.Plugin.get_or_make_ed25519_privkey(str(key_file_path))
 
         # Parse room-specific settings from [plugin_sogs_filter.room.<token>] sections
         rooms: Dict[str, RoomFilter] = {}

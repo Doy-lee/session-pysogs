@@ -768,14 +768,22 @@ class EmojiCaptchaPlugin(sogs.plugin.Plugin):
 
 def entry_point(ini_file: str = 'emoji_captcha.ini'):
     import argparse
+    import pathlib
+
+    # Get default path from environment variables
+    default_ini_path = sogs.plugin.resolve_plugin_ini_path('emoji_captcha', 'PLUGIN_EMOJI_CAPTCHA_INI_PATH')
 
     # Argument parser
     parser = argparse.ArgumentParser(description='Emoji CAPTCHA Plugin for SOGS')
     _ = parser.add_argument('--plugin_emoji_captcha_ini_path', type=str,
-                            default=os.environ.get('PLUGIN_EMOJI_CAPTCHA_INI_PATH', 'emoji_captcha.ini'),
-                            help='Path to the configuration .ini file (default: emoji_captcha.ini or set PLUGIN_EMOJI_CAPTCHA_INI_PATH env)')
-    args     = parser.parse_args()
+                            default=str(default_ini_path),
+                            help='Path to the plugin configuration .ini file. Overrides environment variables if specified.')
+    args = parser.parse_args()
     ini_file = typing.cast(str, args.plugin_emoji_captcha_ini_path)
+
+    # Verify path exists (whether from CLI or default)
+    if not pathlib.Path(ini_file).exists():
+        sogs.plugin._print_plugin_config_error('emoji_captcha', pathlib.Path(ini_file), 'PLUGIN_EMOJI_CAPTCHA_INI_PATH')
 
     # Set logger name
     sogs.plugin.log.name = '[EMOJI CAPTCHA]'
@@ -790,13 +798,19 @@ def entry_point(ini_file: str = 'emoji_captcha.ini'):
     sogs.plugin.log.info(f"Loading Emoji CAPTCHA plugin config from {ini_file}")
 
     # Plugin specific fields from INI
-    key_file:          str           = config.ini.get('plugin_emoji_captcha',    'key_file',          fallback="plugin_emoji_captcha_ed25519")
+    key_file:          str           = config.ini.get('plugin_emoji_captcha',    'key_file',          fallback="emoji_captcha_ed25519")
     retry_limit:       Optional[int] = config.ini.getint('plugin_emoji_captcha', 'retry_limit',       fallback=None)
     retry_timeout_s:   Optional[int] = config.ini.getint('plugin_emoji_captcha', 'retry_timeout_s',   fallback=None)
     refresh_timeout_s: Optional[int] = config.ini.getint('plugin_emoji_captcha', 'refresh_timeout_s', fallback=None)
     write_timeout_s:   Optional[int] = config.ini.getint('plugin_emoji_captcha', 'write_timeout',     fallback=None)
     emoji_list_file:   str           = config.ini.get('plugin_emoji_captcha',    'emoji_list_file',   fallback="")
-    ed_privkey:        bytes         = sogs.plugin.Plugin.get_or_make_ed25519_privkey(key_file)
+
+    # Resolve key path relative to .ini file directory
+    key_file_path = pathlib.Path(key_file)
+    if not key_file_path.is_absolute():
+        ini_file_path = pathlib.Path(ini_file)
+        key_file_path = ini_file_path.parent / key_file_path
+    ed_privkey:        bytes         = sogs.plugin.Plugin.get_or_make_ed25519_privkey(str(key_file_path))
 
     # Load the emoji list from disk if specified
     emoji_list: List[str] = []

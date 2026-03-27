@@ -193,14 +193,22 @@ All payloads are whispered to you privately with descriptions of when they were 
 
 def entry_point():
     import argparse
+    import pathlib
+
+    # Get default path from environment variables
+    default_ini_path = sogs.plugin.resolve_plugin_ini_path('api_debug', 'PLUGIN_API_DEBUG_INI_PATH')
 
     # Argument parser
     parser = argparse.ArgumentParser(description='API Debug Plugin for SOGS')
     _ = parser.add_argument('--plugin_api_debug_ini_path', type=str,
-                            default=os.environ.get('PLUGIN_API_DEBUG_INI_PATH', 'api_debug.ini'),
-                            help='Path to the configuration .ini file (default: api_debug.ini or set PLUGIN_API_DEBUG_INI_PATH env)')
-    args     = parser.parse_args()
+                            default=str(default_ini_path),
+                            help='Path to the plugin configuration .ini file. Overrides environment variables if specified.')
+    args = parser.parse_args()
     ini_path = typing.cast(str, args.plugin_api_debug_ini_path)
+
+    # Verify path exists (whether from CLI or default)
+    if not pathlib.Path(ini_path).exists():
+        sogs.plugin._print_plugin_config_error('api_debug', pathlib.Path(ini_path), 'PLUGIN_API_DEBUG_INI_PATH')
 
     # Set logger name
     sogs.plugin.log.name = '[API DEBUG]'
@@ -220,7 +228,13 @@ def entry_point():
 
         # Plugin specific fields from INI
         key_file:   str   = ini_parser.get('plugin_api_debug', 'key_file', fallback="api_debug_ed25519")
-        ed_privkey: bytes = Plugin.get_or_make_ed25519_privkey(key_file)
+
+        # Resolve key path relative to .ini file directory
+        key_file_path = pathlib.Path(key_file)
+        if not key_file_path.is_absolute():
+            ini_file_path = pathlib.Path(ini_path)
+            key_file_path = ini_file_path.parent / key_file_path
+        ed_privkey: bytes = Plugin.get_or_make_ed25519_privkey(str(key_file_path))
 
         # Instantiate the plugin
         plugin = APIDebugPlugin(sogs_address = config.sogs_address,

@@ -501,14 +501,14 @@ def plugin_hello(m: oxenmq.Message):
         try:
             hello      = PluginHelloRequest.from_bencode(m.dataview()[0])
             session_id = hello.session_id.hex()
-            u          = User(session_id=session_id, autovivify=True)
+            u          = User(session_id=session_id[2:], autovivify=True)
 
             # TODO: handle plugin permissions and setup better
             admin_user = User(id=0)
             u.set_moderator(added_by=admin_user, visible=True)
             metadata.user = u
         except Exception as e:
-            app.logger.warning(f"Plugin with id {row['id']} tried to register bad session_id.")
+            app.logger.warning(f"Plugin with id {row['id']} tried to register bad session_id ({session_id}): {e}")
             del plugin_conns[metadata.id]
             del plugin_conn_info[m.conn]
             return bt_serialize("BadSessionID")

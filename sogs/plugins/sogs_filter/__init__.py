@@ -1,0 +1,1 @@
+from .sogs_filter import entry_point, install_hook

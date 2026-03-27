@@ -8,6 +8,7 @@ import enum
 import typing_extensions
 import configparser
 import pathlib
+import sys
 
 from .types import (
     SessionID,
@@ -81,7 +82,7 @@ class InstallPluginMetadata:
     directory:        pathlib.Path
     manifest_path:    pathlib.Path # Path to 'manifest.ini' for the plugin
     sample_ini_path:  pathlib.Path # Path to '<install_id>.ini.sample' configuration file
-    desired_ini_path: pathlib.Path # Path to '<install_id>.ini' where the installation should write to
+    data_dir:         pathlib.Path # Path to data directory where .ini and key files are stored
 
     @property
     def install_id(self) -> str:
@@ -89,6 +90,81 @@ class InstallPluginMetadata:
         if self.startup_file.endswith('.py'):
             return self.startup_file[:-3]
         return self.startup_file
+
+    @property
+    def desired_ini_path(self) -> pathlib.Path:
+        """Path to '<install_id>.ini' where the installation should write to."""
+        return self.data_dir / f"{self.install_id}.ini"
+
+    @property
+    def ed_key_path(self) -> pathlib.Path:
+        """Path to the Ed25519 private key file."""
+        return self.data_dir / f"{self.install_id}_ed25519"
+
+
+def _print_plugin_config_error(
+    install_id: str,
+    resolved_path: pathlib.Path,
+    plugin_env_var: str,
+    sogs_config: Optional[str] = None,
+    data_dir: Optional[str] = None
+) -> None:
+    """Print user-friendly error message when plugin config is not found."""
+    print(f"Error: Plugin configuration file not found: {resolved_path}", file=sys.stderr)
+    
+    if sogs_config:
+        print(f"\nSOGS_CONFIG is set to: {sogs_config}", file=sys.stderr)
+        if data_dir:
+            print(f"Derived data_dir: {data_dir}", file=sys.stderr)
+    
+    print(f"\nTo resolve this issue:", file=sys.stderr)
+    print(f"1. Ensure the plugin is installed using: python3 -m sogs --install-plugins {install_id}", file=sys.stderr)
+    print(f"2. Check installed plugins with: python3 -m sogs --install-plugins", file=sys.stderr)
+    print(f"3. Or set one of these environment variables:", file=sys.stderr)
+    print(f"   - {plugin_env_var} - path to the plugin's .ini file", file=sys.stderr)
+    print(f"   - SOGS_CONFIG - path to sogs.ini (will use data_dir from [db] section)", file=sys.stderr)
+    
+    sys.exit(1)
+
+
+def resolve_plugin_ini_path(install_id: str, plugin_env_var: str) -> pathlib.Path:
+    """
+    Resolve plugin .ini file path with priority:
+    1. Plugin-specific env var
+    2. SOGS_CONFIG env var -> parse [db].data_dir
+    3. Fallback to sogs-data/plugins/{install_id}/{install_id}.ini
+    
+    Exits with user-friendly error if file doesn't exist.
+    """
+    import os
+    
+    # Priority 1: Plugin-specific env var
+    plugin_specific_path = os.environ.get(plugin_env_var)
+    if plugin_specific_path:
+        path = pathlib.Path(plugin_specific_path)
+        if not path.exists():
+            _print_plugin_config_error(install_id, path, plugin_env_var)
+        return path
+    
+    # Priority 2 & 3: SOGS_CONFIG or default
+    sogs_config = os.environ.get('SOGS_CONFIG')
+    data_dir = 'sogs-data'
+    
+    if sogs_config:
+        try:
+            cp = configparser.ConfigParser()
+            cp.read(sogs_config)
+            if 'db' in cp and 'data_dir' in cp['db']:
+                data_dir = cp['db']['data_dir']
+        except Exception:
+            pass
+    
+    path = pathlib.Path(data_dir) / 'plugins' / install_id / f"{install_id}.ini"
+    
+    if not path.exists():
+        _print_plugin_config_error(install_id, path, plugin_env_var, sogs_config, data_dir)
+    
+    return path
 
 
 class FilterResponse(enum.Enum):
@@ -291,7 +367,7 @@ class Plugin:
         files_read: List[str] = parsed_ini.read(ini_path)
 
         if len(files_read) != 1:
-            log.warning(f"Plugin .ini config file does not exist, terminating plugin. File was: {ini_path}")
+            print(f"Plugin .ini config file does not exist, terminating plugin. File was: {ini_path}", file=sys.stderr)
             return PluginConfigFromINI()
 
         # Load fields common to all plugins
@@ -300,7 +376,7 @@ class Plugin:
 
         # Convert pubkey to bytes
         if not sogs_pubkey_hex:
-            log.error(f"INI config file field 'sogs_pubkey_hex' is missing. File was: {ini_path}")
+            print(f"INI config file field 'sogs_pubkey_hex' is missing. File was: {ini_path}", file=sys.stderr)
             return PluginConfigFromINI()
 
         if sogs_pubkey_hex.startswith("0x"):
@@ -309,14 +385,14 @@ class Plugin:
         try:
             sogs_pubkey: bytes = bytes.fromhex(sogs_pubkey_hex)
         except Exception:
-            log.error(f"Config file field 'sogs_pubkey_hex' was not a valid hex string: {sogs_pubkey_hex}")
+            print(f"Config file field 'sogs_pubkey_hex' was not a valid hex string: {sogs_pubkey_hex}", file=sys.stderr)
             return PluginConfigFromINI()
 
         display_name = ''
         if default_display_name:
             display_name = default_display_name
         else:
-            display_name = parsed_ini.get('plugin', 'display_name', fallback=f"{sogs_pubkey_hex[:4]}..{sogs_pubkey_hex[:-4]}")
+            display_name = parsed_ini.get('plugin', 'name', fallback=f"{sogs_pubkey_hex[:4]}..{sogs_pubkey_hex[:-4]}")
 
         result = PluginConfigFromINI(ini          = parsed_ini,
                                      success      = True,
@@ -338,7 +414,7 @@ class Plugin:
             (_, result) = sodium.crypto_sign_keypair()
             bytes_written = dest_path.write_bytes(result)
             assert bytes_written == sodium.crypto_sign_SECRETKEYBYTES, f"Failed to write plugin key to {key_file}, aborting"
-        assert len(result) == sodium.crypto_sign_SECRETKEYBYTES
+        assert len(result) == sodium.crypto_sign_SECRETKEYBYTES, f"Expected {sodium.crypto_sign_SECRETKEYBYTES}b secret key at {dest_path}, received: {len(result)}b"
         return result
 
     def describe_config(self) -> List[Tuple[str, str]]:
@@ -409,7 +485,7 @@ class Plugin:
     def _say_hello(self):
         conn: oxenmq.ConnectionID = self._require_conn_established()
         try:
-            hello                       = PluginHelloRequest(session_id=self.session_id)
+            hello                       = PluginHelloRequest(session_id=b'\x25' + self.blind25_pubkey)
             future: oxenmq.ResultFuture = self.omq.request_future(conn, "plugin.hello", hello.to_bencode(), request_timeout=timedelta(seconds=10))
             resp:   bytes               = typing.cast(bytes, oxenc.bt_deserialize(future.get()[0]))
             if resp == b'OK':

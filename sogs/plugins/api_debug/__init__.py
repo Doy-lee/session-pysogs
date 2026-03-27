@@ -1,0 +1,1 @@
+from .api_debug import entry_point, install_hook
