@@ -32,8 +32,31 @@ sudo apt install python3-{oxenmq,oxenc,session-util,coloredlogs,uwsgidecorators,
 ```
 
 If you want to use a postgresql database backend then you will also need the python3-psycopg2
-package.  If unsure then stick with the default (sqlite3) database.
+package. If unsure then stick with the default (sqlite3) database.
 
+For developers, you can setup a relatively local development environment with the dependencies
+encapsulated inside a Python virtual environment by running
+`contrib/local-dev-environment-setup.sh`. This download's the various Session libraries and 3rd
+party dependencies and compiles it against the Python virtual environment for containment. It has
+some basic build packages like cmake, git, pkg-config and so forth:
+
+```bash
+mkdir local-dev-env
+../local-dev-environment-setup.sh
+```
+
+After completion it'll ring the terminal bell and print some instructions to proceed e.g.:
+
+```bash
+🎉 session-pysogs portable environment setup successfully! Run the following command to get
+access to a python interpreter that can run SOGS:
+
+  source /home/my_user/session-pysogs/local-dev-env/Builds/session-pysogs/VEnv/bin/activate
+
+Then run in the root of your session-pysogs repository to get started:
+
+  python3 -m sogs --help
+```
 
 ## Step 3: Adjust configuration
 
