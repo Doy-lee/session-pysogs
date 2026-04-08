@@ -85,6 +85,11 @@ trap 'echo -e "\a"' EXIT
 
   pushd $code_dir/libzmq
     git checkout v4.3.5
+    # Regarding CMAKE_POLICY_VERSION_MINIMUM=3.5, if you have CMake >4.X those version treat any
+    # cmake script with a min value <3.5 as incompatible because they didn't want to figure out if
+    # the script was actually compatible with CMake 4.X or not so they introduced this cmake
+    # variable to assume that the script set it to 3.5 (usually scripts using such an old version,
+    # in this case ZMQ uses 2.8~ because they don't use many facilities of CMake in the first place)
     cmake \
       -B $builds_dir/libzmq/Release-Static \
       -S . \
@@ -97,8 +102,8 @@ trap 'echo -e "\a"' EXIT
       -D WITH_DOC=OFF \
       -D WITH_LIBSODIUM=ON \
       -D WITH_PERF_TOOL=OFF \
-      -D ZMQ_BUILD_TESTS=OFF
-
+      -D ZMQ_BUILD_TESTS=OFF \
+      -D CMAKE_POLICY_VERSION_MINIMUM=3.5
     cmake --build $builds_dir/libzmq/Release-Static --parallel
     cmake --install $builds_dir/libzmq/Release-Static --prefix $venv_dir
   popd
@@ -192,6 +197,13 @@ trap 'echo -e "\a"' EXIT
     # the build is setup this symbol isn't visible unless you merge the libraries into a singular .a
     # file or additionally, link to this manually. But out hacky work-around above handles this.
     cp -f $builds_dir/libsession-util/Release-Static/libsession-util.a $venv_dir/lib/libsession-onionreq.a
+
+    # NOTE: ngtcp2
+      # For similar reasons as spdlog build ngtcp2 ourselves to avoid mixing with potential sys
+      # installed libraries later in the libsession-python build. Libsession already builds all of
+      # this for us because BUILD_STATIC_DEPS=ON but dumps it into its build directory, we steal
+      # that and put it into our venv
+      cp -r $builds_dir/libsession-util/Release-Static/static-deps/* $venv_dir/
   popd
 
 # NOTE: libsession-python
