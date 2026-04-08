@@ -162,7 +162,7 @@ trap 'echo -e "\a"' EXIT
   fi
 
   pushd $code_dir/libsession-util
-    git checkout c73fd92eb71e8108cc435fc640fbcb8faceacbb0
+    git checkout v1.3.0
     git submodule update --init --recursive
 
     # This is a hack. If you are using an old cmake version that doesn't support the `ARCHIVE`
@@ -204,6 +204,11 @@ trap 'echo -e "\a"' EXIT
       # this for us because BUILD_STATIC_DEPS=ON but dumps it into its build directory, we steal
       # that and put it into our venv
       cp -r $builds_dir/libsession-util/Release-Static/static-deps/* $venv_dir/
+
+      # NOTE: In the v1.3.0 build of libsession, that's when we _just_ incorporated the NGTCP2 build
+      # into libquic, and in that version we didn't install ngtcp2 so we are missing the headers, we
+      # manually install to overcome that.
+      cmake --install $builds_dir/libsession-util/Release-Static/external/oxen-libquic/external/ngtcp2 --prefix $venv_dir
   popd
 
 # NOTE: libsession-python
